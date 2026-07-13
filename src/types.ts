@@ -142,6 +142,22 @@ export interface InstalledSmapiResult {
   exitCode: number;
 }
 
+export interface UninstalledSmapiResult {
+  version: string | null;
+  platform: SmapiPlatform;
+  gamePath: string;
+  installerPath: string;
+  exitCode: number;
+  message: string;
+}
+
+export type GithubDownloadMode = "direct" | "custom";
+
+export interface GithubDownloadSettings {
+  mode: GithubDownloadMode;
+  customPrefix: string | null;
+}
+
 export interface AiTranslationStatus {
   configured: boolean;
   apiKeyConfigured: boolean;

@@ -9,6 +9,17 @@
 
 前端不直接持有文件系统权限。所有路径进入 Rust 后先规范化，并验证目标位于已确认的游戏目录或应用缓存目录。
 
+## SMAPI 安装、卸载与 GitHub 下载
+
+- 安装、更新和卸载共用官方 SMAPI Release 解析、安全下载、受限解压与平台安装器执行链路；安装器参数以进程参数数组传递，Windows 隐藏控制台窗口并设置总超时；
+- 操作前读取受管游戏状态，并按规范化可执行文件路径扫描同一目录的外部进程；从 Steam、桌面或终端启动的游戏也会阻止安装、更新或卸载，但不会被管理器终止；下载前与安装器执行前分别检查；
+- 安装和更新完成后重新读取本地精确版本，卸载完成后重新确认 SMAPI 可执行文件与 DLL 已不可检测；安装器退出码只作为诊断信息，不能单独决定成功；
+- 官方卸载器应保留用户 `Mods`，前端确认框仍提示先备份；后端不为完成卸载而递归删除 `Mods`；
+- GitHub Release 元数据、资产清单与 `sha256` digest 始终直连 GitHub 官方 API，镜像设置不会改写这一信任来源；
+- 下载方式为 `direct` 或 `custom`。自定义模式仅接受无凭据、端口、查询参数和片段的 HTTPS 前缀，并以“镜像前缀 + 官方资产 URL”构造下载地址；
+- 镜像只可下载带 GitHub 官方 SHA-256 摘要的 SMAPI 资产，响应下载完成后仍与官方摘要比较；官方摘要缺失时明确拒绝镜像路径并要求切回直连，不静默降级或信任镜像响应。
+- 镜像设置先写入同目录临时文件并同步，再执行平台原子替换；进程内读写串行化，并可恢复旧版本遗留的有效备份，避免崩溃窗口静默回退直连。
+
 ## 游戏进程状态
 
 - Rust 后端持有单实例受管进程状态，记录由 `launch_game` 创建的精确 PID、启动请求、启动时间和退出状态；
@@ -37,6 +48,12 @@
 - `restart_game`：结束当前受管进程，并复用已保存的启动请求重新启动。
 - `open_mod_folder`：校验 Mod 归属后调用系统文件管理器。
 - `open_smapi_download`：仅打开固定的 SMAPI 官方下载地址。
+- `get_latest_smapi_release`：直连 GitHub 官方 API，返回最新稳定 Release、标准跨平台资产与官方摘要。
+- `download_latest_smapi_installer`：按已保存的直连或镜像设置下载标准安装包，并将本地 SHA-256、大小和官方摘要核验状态写入结果。
+- `install_latest_smapi`：下载并校验官方包，受限解压后调用当前平台安装器，并以安装后精确版本检测判断结果。
+- `uninstall_smapi`：游戏未运行时调用官方安装器的卸载入口，并以卸载后重新检测判断结果；不主动删除用户 `Mods`。
+- `get_github_download_settings`：返回 GitHub 下载方式与已保存的自定义镜像前缀。
+- `save_github_download_settings`：校验并保存 `direct` 或 `custom` 设置；自定义前缀必须满足 HTTPS 与 URL 结构限制。
 - `discover_mods`：合并 Nexus 公开趋势榜与 GitHub Search/Releases 数据。
 - `open_remote_url`：只允许打开受信任上游域名的 HTTPS 链接。
 - `get_nexus_auth_status` / `set_nexus_api_key` / `clear_nexus_api_key`：管理系统凭据库中的 Nexus Key，不向前端返回原文；
@@ -47,5 +64,4 @@
 ## 后续接口
 
 - `inspect_archive` / `install_archive`：临时展开、路径穿越检查、清单确认；
-- `check_updates` / `apply_update`：上游适配、配置保护、原子替换；
-- `install_smapi`：下载官方包、校验来源、请求用户确认后启动安装器。
+- `check_updates` / `apply_update`：上游适配、配置保护、原子替换。

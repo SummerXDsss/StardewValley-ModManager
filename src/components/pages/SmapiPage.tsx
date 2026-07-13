@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { Alert, App, Button, Space, Tag } from "antd";
 import {
+  DeleteOutlined,
   ExportOutlined,
   ReloadOutlined,
   RocketOutlined,
   SafetyCertificateOutlined,
 } from "@ant-design/icons";
 import { PageTitle } from "../shared";
-import { getLatestSmapiRelease, installLatestSmapi } from "../../api";
+import { getLatestSmapiRelease, installLatestSmapi, uninstallSmapi } from "../../api";
 import type { Dashboard, InstalledSmapiResult, SmapiReleaseInfo } from "../../types";
 import { compareSemver } from "../../utils/semver";
 import { formatDisplayPath } from "../../utils/path";
@@ -38,6 +39,8 @@ export function SmapiPage({
   const [releaseError, setReleaseError] = useState<string>();
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string>();
+  const [uninstalling, setUninstalling] = useState(false);
+  const [uninstallError, setUninstallError] = useState<string>();
   const [installedResult, setInstalledResult] = useState<InstalledSmapiResult>();
 
   const loadRelease = async () => {
@@ -59,6 +62,7 @@ export function SmapiPage({
   useEffect(() => {
     setInstalledResult(undefined);
     setInstallError(undefined);
+    setUninstallError(undefined);
   }, [dashboard.installation?.path]);
 
   const confirmInstall = () => {
@@ -88,10 +92,14 @@ export function SmapiPage({
       onOk: async () => {
         setInstalling(true);
         setInstallError(undefined);
+        setUninstallError(undefined);
         try {
           const result = await installLatestSmapi(gamePath);
           const refreshed = await onDashboardRefresh();
-          if (!refreshed?.smapi.installed) {
+          if (!refreshed) {
+            throw new Error("安装程序已结束，但无法重新扫描游戏目录");
+          }
+          if (!refreshed.smapi.installed) {
             throw new Error("安装程序已结束，但重新扫描后仍未检测到 SMAPI");
           }
           const confirmedVersion = refreshed.smapi.version ?? result.version;
@@ -108,6 +116,58 @@ export function SmapiPage({
     });
   };
 
+  const confirmUninstall = () => {
+    const gamePath = dashboard.installation?.path;
+    if (!gamePath) {
+      message.warning("请先设置有效的游戏目录");
+      return;
+    }
+    if (gameRunning) {
+      message.warning("请先关闭游戏，再卸载 SMAPI");
+      return;
+    }
+
+    modal.confirm({
+      title: "卸载 SMAPI？",
+      icon: <DeleteOutlined />,
+      content: (
+        <div className="smapi-install-confirm">
+          <p>将运行 SMAPI 官方卸载器并移除游戏目录中的加载器文件。</p>
+          <p><strong>目标目录：</strong><code>{formatDisplayPath(gamePath)}</code></p>
+          <p>用户 Mods 将按官方卸载器行为保留；卸载前仍建议备份重要配置。</p>
+        </div>
+      ),
+      okText: "卸载 SMAPI",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setUninstalling(true);
+        setInstallError(undefined);
+        setUninstallError(undefined);
+        try {
+          const result = await uninstallSmapi(gamePath);
+          const refreshed = await onDashboardRefresh();
+          if (!refreshed) {
+            throw new Error("卸载程序已结束，但无法重新扫描游戏目录");
+          }
+          if (refreshed.smapi.installed) {
+            throw new Error("卸载程序已结束，但重新扫描后仍检测到 SMAPI");
+          }
+          setInstalledResult(undefined);
+          message.success(result.version
+            ? `SMAPI ${result.version} 已卸载，用户 Mods 已保留`
+            : "SMAPI 已卸载，用户 Mods 已保留");
+        } catch (error) {
+          const detail = String(error);
+          setUninstallError(detail);
+          message.error(detail);
+        } finally {
+          setUninstalling(false);
+        }
+      },
+    });
+  };
+
   const installedVersion = installedResult?.version ?? dashboard.smapi.version;
   const smapiInstalled = dashboard.smapi.installed || installedResult !== undefined;
   const versionComparison = release && installedVersion
@@ -118,7 +178,7 @@ export function SmapiPage({
   return (
     <section>
       <PageTitle title="SMAPI" subtitle="模组加载器与运行环境" />
-      {(releaseError || installError) && (
+      {(releaseError || installError || uninstallError) && (
         <div className="smapi-alerts">
           {releaseError && (
             <Alert
@@ -137,6 +197,16 @@ export function SmapiPage({
               message="SMAPI 安装未完成"
               description={installError}
               onClose={() => setInstallError(undefined)}
+            />
+          )}
+          {uninstallError && (
+            <Alert
+              type="error"
+              showIcon
+              closable
+              message="SMAPI 卸载未完成"
+              description={uninstallError}
+              onClose={() => setUninstallError(undefined)}
             />
           )}
         </div>
@@ -166,7 +236,7 @@ export function SmapiPage({
             <Button
               type="primary"
               icon={<RocketOutlined />}
-              disabled={gameRunning}
+              disabled={gameRunning || installing || uninstalling}
               onClick={onLaunchSmapi}
             >
               {gameRunning ? "游戏运行中" : "启动 SMAPI"}
@@ -176,13 +246,25 @@ export function SmapiPage({
             type={smapiInstalled ? "default" : "primary"}
             icon={<SafetyCertificateOutlined />}
             loading={installing}
-            disabled={installing || releaseLoading || !dashboard.installation || gameRunning}
+            disabled={installing || uninstalling || releaseLoading || !dashboard.installation || gameRunning}
             aria-label={smapiInstalled ? "安装或更新 SMAPI" : "安装 SMAPI"}
             onClick={confirmInstall}
           >
             {updateAvailable ? "更新 SMAPI" : smapiInstalled ? "重新安装 SMAPI" : "安装 SMAPI"}
           </Button>
-          {(releaseError || installError) && (
+          {dashboard.smapi.installed && (
+            <Button
+              danger
+              icon={<DeleteOutlined />}
+              loading={uninstalling}
+              disabled={installing || uninstalling || gameRunning}
+              aria-label="卸载 SMAPI 并保留用户 Mods"
+              onClick={confirmUninstall}
+            >
+              卸载 SMAPI
+            </Button>
+          )}
+          {(releaseError || installError || uninstallError) && (
             <Button type="link" icon={<ExportOutlined />} onClick={onOpenSmapiDownload}>
               打开官方页面
             </Button>

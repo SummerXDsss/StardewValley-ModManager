@@ -31,6 +31,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
+use super::github_settings::{
+    apply_github_mirror, AppliedGithubDownloadUrl, GithubDownloadSettings,
+};
+
 const API_URL: &str = "https://api.github.com/repos/Pathoschild/SMAPI/releases/latest";
 const LATEST_RELEASE_URL: &str = "https://github.com/Pathoschild/SMAPI/releases/latest";
 const RELEASE_TAG_PATH_PREFIX: &str = "/Pathoschild/SMAPI/releases/tag/";
@@ -130,6 +134,39 @@ pub struct InstallSmapiResult {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UninstallSmapiResult {
+    pub version: Option<String>,
+    pub platform: SmapiPlatform,
+    pub installer_path: String,
+    pub exit_code: i32,
+    pub game_path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallerAction {
+    Install,
+    Uninstall,
+}
+
+impl InstallerAction {
+    fn argument(self) -> &'static str {
+        match self {
+            Self::Install => "--install",
+            Self::Uninstall => "--uninstall",
+        }
+    }
+
+    fn cache_label(self) -> &'static str {
+        match self {
+            Self::Install => "install",
+            Self::Uninstall => "uninstall",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ExtractionLimits {
     max_entries: usize,
@@ -191,14 +228,16 @@ pub async fn latest_release() -> Result<SmapiReleaseInfo, String> {
 
 pub async fn download_latest_installer(
     cache_dir: &Path,
+    settings: &GithubDownloadSettings,
 ) -> Result<DownloadedSmapiInstaller, String> {
     let release = latest_release().await?;
-    download_installer(cache_dir, &release).await
+    download_installer(cache_dir, &release, settings).await
 }
 
 pub async fn download_installer(
     cache_dir: &Path,
     release: &SmapiReleaseInfo,
+    settings: &GithubDownloadSettings,
 ) -> Result<DownloadedSmapiInstaller, String> {
     validate_tag(&release.tag_name)?;
     let expected_name = expected_asset_name(&release.tag_name);
@@ -218,6 +257,7 @@ pub async fn download_installer(
     let download_url = Url::parse(&release.asset.download_url)
         .map_err(|error| format!("Invalid SMAPI download URL: {error}"))?;
     validate_initial_download_url(&download_url, &release.tag_name, &expected_name)?;
+    let download = apply_github_mirror(settings, &download_url, release.asset.digest.as_deref())?;
 
     let release_dir = cache_dir
         .join("downloads")
@@ -229,8 +269,8 @@ pub async fn download_installer(
 
     let target = safe_download_target(&release_dir, &expected_name)?;
     let part = unique_part_path(&target)?;
-    let client = download_client()?;
-    let outcome = download_to_part(&client, download_url, release, &part).await;
+    let client = download_client(&download)?;
+    let outcome = download_to_part(&client, &download, release, &part).await;
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -259,6 +299,23 @@ pub fn install_downloaded_installer(
     downloaded: &DownloadedSmapiInstaller,
     game_path: &Path,
 ) -> Result<SmapiInstallerExecution, String> {
+    run_downloaded_installer(cache_dir, downloaded, game_path, InstallerAction::Install)
+}
+
+pub fn uninstall_downloaded_installer(
+    cache_dir: &Path,
+    downloaded: &DownloadedSmapiInstaller,
+    game_path: &Path,
+) -> Result<SmapiInstallerExecution, String> {
+    run_downloaded_installer(cache_dir, downloaded, game_path, InstallerAction::Uninstall)
+}
+
+fn run_downloaded_installer(
+    cache_dir: &Path,
+    downloaded: &DownloadedSmapiInstaller,
+    game_path: &Path,
+    action: InstallerAction,
+) -> Result<SmapiInstallerExecution, String> {
     validate_tag(&downloaded.version)?;
     if !game_path.is_absolute() || !game_path.is_dir() {
         return Err("The SMAPI game path must be an existing absolute directory".into());
@@ -284,8 +341,11 @@ pub fn install_downloaded_installer(
     std::fs::create_dir_all(&extraction_parent)
         .map_err(|error| format!("Could not create the SMAPI extraction directory: {error}"))?;
     let sequence = PART_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let extraction_directory =
-        extraction_parent.join(format!(".install-{}-{sequence}", std::process::id()));
+    let extraction_directory = extraction_parent.join(format!(
+        ".{}-{}-{sequence}",
+        action.cache_label(),
+        std::process::id()
+    ));
     std::fs::create_dir(&extraction_directory).map_err(|error| {
         format!("Could not create a private SMAPI extraction directory: {error}")
     })?;
@@ -304,7 +364,10 @@ pub fn install_downloaded_installer(
         }
     };
 
-    let run_result = run_native_installer(&extracted.executable, &extracted.root, game_path);
+    let run_result =
+        crate::services::game::ensure_game_processes_stopped(game_path).and_then(|()| {
+            run_native_installer(&extracted.executable, &extracted.root, game_path, action)
+        });
     let _ = std::fs::remove_dir_all(&extracted.directory);
     let exit_code = run_result?;
 
@@ -638,12 +701,13 @@ fn run_native_installer(
     executable: &Path,
     installer_root: &Path,
     game_path: &Path,
+    action: InstallerAction,
 ) -> Result<i32, String> {
     #[cfg(target_os = "macos")]
     clear_macos_quarantine(&installer_root.join("internal"));
 
     let mut child = Command::new(executable)
-        .arg("--install")
+        .arg(action.argument())
         .arg("--game-path")
         .arg(game_path)
         .arg("--no-prompt")
@@ -687,6 +751,7 @@ fn run_native_installer(
     executable: &Path,
     installer_root: &Path,
     game_path: &Path,
+    action: InstallerAction,
 ) -> Result<i32, String> {
     use windows_sys::Win32::{
         Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT},
@@ -700,7 +765,7 @@ fn run_native_installer(
     let application = wide_null(executable.as_os_str(), "SMAPI installer path")?;
     let current_directory = wide_null(installer_root.as_os_str(), "SMAPI installer directory")?;
     let arguments = [
-        OsStr::new("--install"),
+        OsStr::new(action.argument()),
         OsStr::new("--game-path"),
         game_path.as_os_str(),
         OsStr::new("--no-prompt"),
@@ -945,18 +1010,18 @@ fn release_from_redirect_url(url: &Url) -> Result<SmapiReleaseInfo, String> {
 
 async fn download_to_part(
     client: &Client,
-    url: Url,
+    download: &AppliedGithubDownloadUrl,
     release: &SmapiReleaseInfo,
     part: &Path,
 ) -> Result<DownloadOutcome, String> {
     let mut response = client
-        .get(url)
+        .get(download.url().clone())
         .send()
         .await
         .map_err(|error| format!("Could not download the SMAPI installer: {error}"))?
         .error_for_status()
         .map_err(|error| format!("SMAPI installer server returned an error: {error}"))?;
-    validate_redirect_url(response.url())?;
+    validate_download_response_url(download, response.url())?;
 
     if let Some(content_length) = response.content_length() {
         validate_asset_size(content_length)?;
@@ -1021,7 +1086,15 @@ async fn download_to_part(
     drop(file);
 
     let sha256 = format!("{:x}", hasher.finalize());
-    let digest_verified = verify_sha256_digest(release.asset.digest.as_deref(), &sha256)?;
+    let digest_verified = match download.expected_sha256() {
+        Some(expected) if sha256.eq_ignore_ascii_case(expected) => true,
+        Some(expected) => {
+            return Err(format!(
+                "SMAPI installer SHA-256 mismatch (expected {expected}, received {sha256})"
+            ));
+        }
+        None => verify_sha256_digest(release.asset.digest.as_deref(), &sha256)?,
+    };
 
     Ok(DownloadOutcome {
         size: total,
@@ -1038,24 +1111,37 @@ fn metadata_client() -> Result<Client, String> {
         .map_err(|error| format!("Could not initialize the GitHub client: {error}"))
 }
 
-fn download_client() -> Result<Client, String> {
+fn download_client(download: &AppliedGithubDownloadUrl) -> Result<Client, String> {
+    let download = download.clone();
     Client::builder()
         .user_agent(USER_AGENT)
         .timeout(DOWNLOAD_TIMEOUT)
-        .redirect(Policy::custom(|attempt| {
+        .https_only(true)
+        .redirect(Policy::custom(move |attempt| {
             if attempt.previous().len() >= MAX_REDIRECTS {
                 return attempt.error(std::io::Error::new(
                     ErrorKind::InvalidData,
                     "too many SMAPI download redirects",
                 ));
             }
-            if let Err(error) = validate_redirect_url(attempt.url()) {
+            if let Err(error) = validate_download_response_url(&download, attempt.url()) {
                 return attempt.error(std::io::Error::new(ErrorKind::PermissionDenied, error));
             }
             attempt.follow()
         }))
         .build()
         .map_err(|error| format!("Could not initialize the SMAPI download client: {error}"))
+}
+
+fn validate_download_response_url(
+    download: &AppliedGithubDownloadUrl,
+    response_url: &Url,
+) -> Result<(), String> {
+    if download.is_mirrored() {
+        download.validate_mirror_response_url(response_url)
+    } else {
+        validate_redirect_url(response_url)
+    }
 }
 
 fn cached_release() -> Option<SmapiReleaseInfo> {
@@ -1418,6 +1504,14 @@ mod tests {
             installer_entry_for(SmapiPlatform::Linux),
             "install on Linux.sh"
         );
+    }
+
+    #[test]
+    fn maps_installer_actions_to_official_cli_arguments() {
+        assert_eq!(InstallerAction::Install.argument(), "--install");
+        assert_eq!(InstallerAction::Uninstall.argument(), "--uninstall");
+        assert_eq!(InstallerAction::Install.cache_label(), "install");
+        assert_eq!(InstallerAction::Uninstall.cache_label(), "uninstall");
     }
 
     #[test]

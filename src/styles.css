@@ -805,6 +805,31 @@ button, input {
   border-radius: 8px;
 }
 
+.github-download-setting {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  background: #FFFFFF;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.github-download-setting > small {
+  color: var(--color-dark-muted);
+  font-size: 12px;
+}
+
+.github-download-field {
+  display: grid;
+  gap: 6px;
+}
+
+.github-download-field > label {
+  color: var(--color-foreground);
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .ai-translation-field {
   display: grid;
   gap: 6px;

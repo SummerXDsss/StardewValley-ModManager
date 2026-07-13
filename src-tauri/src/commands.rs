@@ -51,6 +51,7 @@ pub fn set_mod_enabled(
     enabled: bool,
 ) -> Result<(), String> {
     manager.run_while_stopped(|| {
+        game::ensure_game_processes_stopped(Path::new(&game_path))?;
         mods::set_enabled(Path::new(&game_path), Path::new(&mod_path), enabled)
     })
 }
@@ -61,7 +62,10 @@ pub fn remove_mod(
     game_path: String,
     mod_path: String,
 ) -> Result<(), String> {
-    manager.run_while_stopped(|| mods::move_to_trash(Path::new(&game_path), Path::new(&mod_path)))
+    manager.run_while_stopped(|| {
+        game::ensure_game_processes_stopped(Path::new(&game_path))?;
+        mods::move_to_trash(Path::new(&game_path), Path::new(&mod_path))
+    })
 }
 
 #[tauri::command]
@@ -80,6 +84,35 @@ pub async fn get_latest_smapi_release() -> Result<providers::smapi::SmapiRelease
 }
 
 #[tauri::command]
+pub fn get_github_download_settings(
+    app: tauri::AppHandle,
+) -> Result<providers::github_settings::GithubDownloadSettings, String> {
+    load_github_download_settings(&app)
+}
+
+fn load_github_download_settings(
+    app: &tauri::AppHandle,
+) -> Result<providers::github_settings::GithubDownloadSettings, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("Could not determine the app configuration directory: {error}"))?;
+    providers::github_settings::get_settings(&config_dir)
+}
+
+#[tauri::command]
+pub fn save_github_download_settings(
+    app: tauri::AppHandle,
+    request: providers::github_settings::SaveGithubDownloadSettingsRequest,
+) -> Result<providers::github_settings::GithubDownloadSettings, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("Could not determine the app configuration directory: {error}"))?;
+    providers::github_settings::save_settings(&config_dir, request)
+}
+
+#[tauri::command]
 pub async fn download_latest_smapi_installer(
     app: tauri::AppHandle,
 ) -> Result<providers::smapi::DownloadedSmapiInstaller, String> {
@@ -87,7 +120,8 @@ pub async fn download_latest_smapi_installer(
         .path()
         .app_cache_dir()
         .map_err(|error| format!("无法确定应用缓存目录：{error}"))?;
-    providers::smapi::download_latest_installer(&cache_dir).await
+    let settings = load_github_download_settings(&app)?;
+    providers::smapi::download_latest_installer(&cache_dir, &settings).await
 }
 
 #[tauri::command]
@@ -99,13 +133,14 @@ pub async fn install_latest_smapi(
     let installation = game::inspect_game(Path::new(&game_path))?;
     let canonical_game_path = std::path::PathBuf::from(&installation.path);
     let manager = manager.inner().clone();
-    manager.run_while_stopped(|| Ok(()))?;
+    manager.run_while_stopped(|| game::ensure_game_processes_stopped(&canonical_game_path))?;
 
     let cache_dir = app
         .path()
         .app_cache_dir()
         .map_err(|error| format!("Could not determine the app cache directory: {error}"))?;
-    let downloaded = providers::smapi::download_latest_installer(&cache_dir).await?;
+    let settings = load_github_download_settings(&app)?;
+    let downloaded = providers::smapi::download_latest_installer(&cache_dir, &settings).await?;
 
     tauri::async_runtime::spawn_blocking(move || {
         manager.run_while_stopped(|| {
@@ -115,6 +150,7 @@ pub async fn install_latest_smapi(
                     "The game directory changed while preparing the SMAPI installer".into(),
                 );
             }
+            game::ensure_game_processes_stopped(&canonical_game_path)?;
 
             let execution = providers::smapi::install_downloaded_installer(
                 &cache_dir,
@@ -147,6 +183,69 @@ pub async fn install_latest_smapi(
     .map_err(|error| format!("SMAPI installer task failed: {error}"))?
 }
 
+#[tauri::command]
+pub async fn uninstall_smapi(
+    app: tauri::AppHandle,
+    manager: tauri::State<'_, GameProcessManager>,
+    game_path: String,
+) -> Result<providers::smapi::UninstallSmapiResult, String> {
+    let installation = game::inspect_game(Path::new(&game_path))?;
+    let canonical_game_path = std::path::PathBuf::from(&installation.path);
+    if !game::inspect_smapi(&canonical_game_path).installed {
+        return Err("SMAPI is not installed in the selected game directory".into());
+    }
+
+    let manager = manager.inner().clone();
+    manager.run_while_stopped(|| game::ensure_game_processes_stopped(&canonical_game_path))?;
+
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("Could not determine the app cache directory: {error}"))?;
+    let settings = load_github_download_settings(&app)?;
+    let downloaded = providers::smapi::download_latest_installer(&cache_dir, &settings).await?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        manager.run_while_stopped(|| {
+            let before_uninstall = game::inspect_game(&canonical_game_path)?;
+            if Path::new(&before_uninstall.path) != canonical_game_path {
+                return Err(
+                    "The game directory changed while preparing the SMAPI uninstaller".into(),
+                );
+            }
+            let before_status = game::inspect_smapi(&canonical_game_path);
+            if !before_status.installed {
+                return Err("SMAPI was removed before the uninstaller started".into());
+            }
+            game::ensure_game_processes_stopped(&canonical_game_path)?;
+
+            let execution = providers::smapi::uninstall_downloaded_installer(
+                &cache_dir,
+                &downloaded,
+                &canonical_game_path,
+            )?;
+
+            let after_uninstall = game::inspect_game(&canonical_game_path)?;
+            if Path::new(&after_uninstall.path) != canonical_game_path {
+                return Err("The game directory changed while uninstalling SMAPI".into());
+            }
+            let status = game::inspect_smapi(&canonical_game_path);
+            verify_uninstalled_smapi(&status, &canonical_game_path, execution.exit_code)?;
+
+            Ok(providers::smapi::UninstallSmapiResult {
+                version: before_status.version,
+                platform: execution.platform,
+                installer_path: execution.installer_path,
+                exit_code: execution.exit_code,
+                game_path: after_uninstall.path,
+                message: "SMAPI uninstallation verified successfully".into(),
+            })
+        })
+    })
+    .await
+    .map_err(|error| format!("SMAPI uninstaller task failed: {error}"))?
+}
+
 fn verify_installed_smapi_version(
     status: &SmapiStatus,
     expected_version: &str,
@@ -165,6 +264,46 @@ fn verify_installed_smapi_version(
         None => Err(format!(
             "SMAPI installer exited with code {exit_code}, but the installed SMAPI version could not be verified"
         )),
+    }
+}
+
+const SMAPI_RUNTIME_FILES: [&str; 4] = [
+    "StardewModdingAPI.dll",
+    "StardewModdingAPI.exe",
+    "StardewModdingAPI",
+    "StardewModdingAPI.bin.osx",
+];
+
+fn verify_uninstalled_smapi(
+    status: &SmapiStatus,
+    game_path: &Path,
+    exit_code: i32,
+) -> Result<(), String> {
+    if status.installed {
+        return Err(format!(
+            "SMAPI uninstaller exited with code {exit_code}, but SMAPI is still installed"
+        ));
+    }
+
+    let mut remaining = Vec::new();
+    for file_name in SMAPI_RUNTIME_FILES {
+        match std::fs::symlink_metadata(game_path.join(file_name)) {
+            Ok(_) => remaining.push(file_name),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not verify that {file_name} was removed after SMAPI uninstaller exited with code {exit_code}: {error}"
+                ));
+            }
+        }
+    }
+    if remaining.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "SMAPI uninstaller exited with code {exit_code}, but these runtime files remain: {}",
+            remaining.join(", ")
+        ))
     }
 }
 
@@ -321,6 +460,8 @@ fn dashboard_for(game_path: &str) -> Dashboard {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, time::SystemTime};
+
     use super::*;
 
     #[test]
@@ -352,5 +493,40 @@ mod tests {
             ..verified
         };
         assert!(verify_installed_smapi_version(&missing_executable, "4.5.2", 0).is_err());
+    }
+
+    #[test]
+    fn smapi_uninstall_verification_requires_all_runtime_files_to_be_removed() {
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "valley-steward-uninstall-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(directory.join("Mods/User.Mod")).unwrap();
+        fs::write(directory.join("Mods/User.Mod/manifest.json"), b"user mod").unwrap();
+
+        let uninstalled = SmapiStatus {
+            installed: false,
+            version: None,
+            executable: None,
+        };
+        assert!(verify_uninstalled_smapi(&uninstalled, &directory, 1).is_ok());
+        assert!(directory.join("Mods/User.Mod/manifest.json").is_file());
+
+        fs::write(directory.join("StardewModdingAPI.dll"), b"still present").unwrap();
+        assert!(verify_uninstalled_smapi(&uninstalled, &directory, 0).is_err());
+        fs::remove_file(directory.join("StardewModdingAPI.dll")).unwrap();
+
+        let still_installed = SmapiStatus {
+            installed: true,
+            version: Some("4.5.2".into()),
+            executable: Some("StardewModdingAPI.exe".into()),
+        };
+        assert!(verify_uninstalled_smapi(&still_installed, &directory, 0).is_err());
+
+        fs::remove_dir_all(directory).unwrap();
     }
 }

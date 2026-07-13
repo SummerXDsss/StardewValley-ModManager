@@ -7,6 +7,7 @@ import type {
   DownloadedModFile,
   DownloadedSmapiInstaller,
   GameProcessStatus,
+  GithubDownloadSettings,
   InstalledSmapiResult,
   LaunchRequest,
   NexusAuthStatus,
@@ -16,10 +17,15 @@ import type {
   SmapiPlatform,
   SmapiReleaseInfo,
   TranslateModResult,
+  UninstalledSmapiResult,
 } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 let demoGameProcessStatus: GameProcessStatus = { state: "stopped", running: false };
+let demoGithubDownloadSettings: GithubDownloadSettings = {
+  mode: "direct",
+  customPrefix: null,
+};
 
 export async function getDashboard(): Promise<Dashboard> {
   return isTauri() ? invoke<Dashboard>("get_dashboard") : structuredClone(demoDashboard);
@@ -172,6 +178,28 @@ export async function downloadLatestSmapiInstaller(): Promise<DownloadedSmapiIns
 export async function installLatestSmapi(gamePath: string): Promise<InstalledSmapiResult> {
   if (!isTauri()) throw new Error("SMAPI 一键安装仅支持 Tauri 桌面应用");
   return invoke<InstalledSmapiResult>("install_latest_smapi", { gamePath });
+}
+
+export async function uninstallSmapi(gamePath: string): Promise<UninstalledSmapiResult> {
+  if (!isTauri()) throw new Error("SMAPI 一键卸载仅支持 Tauri 桌面应用");
+  return invoke<UninstalledSmapiResult>("uninstall_smapi", { gamePath });
+}
+
+export async function getGithubDownloadSettings(): Promise<GithubDownloadSettings> {
+  if (!isTauri()) return structuredClone(demoGithubDownloadSettings);
+  return invoke<GithubDownloadSettings>("get_github_download_settings");
+}
+
+export async function saveGithubDownloadSettings(
+  request: GithubDownloadSettings,
+): Promise<GithubDownloadSettings> {
+  if (!isTauri()) {
+    demoGithubDownloadSettings = request.mode === "custom"
+      ? { mode: "custom", customPrefix: request.customPrefix?.trim() || null }
+      : { mode: "direct", customPrefix: null };
+    return structuredClone(demoGithubDownloadSettings);
+  }
+  return invoke<GithubDownloadSettings>("save_github_download_settings", { request });
 }
 
 export async function getAiTranslationSettings(): Promise<AiTranslationStatus> {

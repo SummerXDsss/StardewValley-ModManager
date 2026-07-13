@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command},
 };
+use sysinfo::System;
 use walkdir::WalkDir;
 
 #[cfg(unix)]
@@ -27,6 +28,13 @@ const MAX_SMAPI_BUNDLED_MANIFEST_SIZE: usize = 256 * 1024;
 const GAME_PATH_CONFIG_FILE: &str = "game-path.json";
 const GAME_PATH_CONFIG_VERSION: u8 = 1;
 const MAX_GAME_PATH_CONFIG_SIZE: u64 = 16 * 1024;
+const GAME_EXECUTABLE_NAMES: [&str; 3] =
+    ["Stardew Valley.exe", "StardewValley.exe", "StardewValley"];
+const SMAPI_EXECUTABLE_NAMES: [&str; 3] = [
+    "StardewModdingAPI.exe",
+    "StardewModdingAPI",
+    "StardewModdingAPI.bin.osx",
+];
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -128,6 +136,69 @@ pub fn inspect_smapi(path: &Path) -> SmapiStatus {
                 .map(|name| name.to_string_lossy().into_owned())
         }),
     }
+}
+
+pub(crate) fn ensure_game_processes_stopped(game_path: &Path) -> Result<(), String> {
+    let installation = inspect_game(game_path)?;
+    let canonical_game_path = PathBuf::from(installation.path);
+    let candidates = GAME_EXECUTABLE_NAMES
+        .iter()
+        .chain(SMAPI_EXECUTABLE_NAMES.iter())
+        .map(|name| canonical_game_path.join(name))
+        .filter(|path| path.is_file())
+        .map(|path| {
+            path.canonicalize()
+                .map_err(|error| format!("无法确认游戏可执行文件 {}：{error}", path.display()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let system = System::new_all();
+    for process in system.processes().values() {
+        if let Some(executable) = process.exe() {
+            if let Ok(executable) = executable.canonicalize() {
+                if candidates
+                    .iter()
+                    .any(|candidate| executable_paths_equal(candidate, &executable))
+                {
+                    return Err("检测到所选目录中的游戏正在运行，请先关闭游戏再继续".into());
+                }
+                continue;
+            }
+        }
+
+        if candidates.iter().any(|candidate| {
+            candidate
+                .file_name()
+                .is_some_and(|name| executable_names_equal(name, process.name()))
+        }) {
+            return Err(
+                "检测到同名游戏进程，但无法确认其路径；为保护游戏文件，请先关闭该进程再继续".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn executable_paths_equal(left: &Path, right: &Path) -> bool {
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn executable_paths_equal(left: &Path, right: &Path) -> bool {
+    left == right
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn executable_names_equal(left: &OsStr, right: &OsStr) -> bool {
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn executable_names_equal(left: &OsStr, right: &OsStr) -> bool {
+    left == right
 }
 
 fn smapi_version(game_path: &Path) -> Option<String> {
@@ -311,21 +382,17 @@ pub fn open_smapi_download() -> Result<(), String> {
 }
 
 fn game_executable(path: &Path) -> Option<PathBuf> {
-    ["Stardew Valley.exe", "StardewValley.exe", "StardewValley"]
+    GAME_EXECUTABLE_NAMES
         .iter()
         .map(|name| path.join(name))
         .find(|candidate| candidate.is_file())
 }
 
 fn smapi_executable(path: &Path) -> Option<PathBuf> {
-    [
-        "StardewModdingAPI.exe",
-        "StardewModdingAPI",
-        "StardewModdingAPI.bin.osx",
-    ]
-    .iter()
-    .map(|name| path.join(name))
-    .find(|candidate| candidate.is_file())
+    SMAPI_EXECUTABLE_NAMES
+        .iter()
+        .map(|name| path.join(name))
+        .find(|candidate| candidate.is_file())
 }
 
 fn infer_store(path: &Path) -> String {
@@ -664,6 +731,48 @@ mod detection_tests {
 
         fs::remove_file(game_dir.join(executable)).unwrap();
         assert!(load_saved_game(&config_dir).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn detects_a_game_started_outside_the_manager_by_its_exact_path() {
+        let root = unique_temp_directory();
+        let game_dir = root.join("game");
+        fs::create_dir_all(&game_dir).unwrap();
+
+        #[cfg(windows)]
+        let (source, executable, arguments) = (
+            PathBuf::from(std::env::var("WINDIR").unwrap())
+                .join("System32")
+                .join("ping.exe"),
+            "StardewValley.exe",
+            vec!["127.0.0.1", "-n", "30"],
+        );
+        #[cfg(unix)]
+        let (source, executable, arguments) =
+            (PathBuf::from("/bin/sleep"), "StardewValley", vec!["30"]);
+
+        let target = game_dir.join(executable);
+        fs::copy(source, &target).unwrap();
+        let mut child = Command::new(&target).args(arguments).spawn().unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let detected = loop {
+            if ensure_game_processes_stopped(&game_dir).is_err() {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            detected,
+            "the externally started game process was not detected"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

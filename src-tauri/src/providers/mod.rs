@@ -1,4 +1,5 @@
 pub mod github;
+pub mod github_settings;
 pub mod nexus;
 pub mod smapi;
 pub mod translation;

@@ -14,6 +14,8 @@ Valley Steward 是一个面向《星露谷物语》PC 玩家的轻量 Mod 管理
 - 检测 Stardew Valley 与 SMAPI 可执行文件，并从 DLL 版本资源或官方 Mod 清单读取 SMAPI 版本；
 - 读取 `Pathoschild/SMAPI` 最新稳定 Release，严格选择标准跨平台安装包，限制大小并计算 SHA-256；GitHub 提供摘要时会进一步核验；
 - 支持确认后一键安装或更新 SMAPI：受限解压官方 ZIP，直接调用当前平台安装器，并在结束后重新检测实际安装版本；
+- 支持确认后一键卸载 SMAPI：同一游戏目录由管理器、Steam、桌面或终端启动时均拒绝操作，调用官方安装器后重新检测实际状态，不把安装器退出码单独视为成功；卸载保留用户 `Mods`，操作前仍建议备份；
+- 设置页可选择 GitHub 直连或填写自定义 HTTPS 镜像前缀；Release 元数据始终来自 GitHub 官方 API，镜像只用于带官方 SHA-256 摘要的 SMAPI 资产，下载后仍会核验摘要；
 - 一键启动原版游戏或 SMAPI；
 - 支持通过 `--mods-path` 启动指定 Mod 配置目录；
 - 可选择“记住上次选择”，下次继续使用相同启动模式；
@@ -176,6 +178,8 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 - API Key 由 Windows Credential Manager、macOS Keychain 或 Linux Secret Service 保存，前端无法读取原文；
 - AI 翻译 API Key 同样进入系统凭据库；远程 Base URL 必须使用 HTTPS，本机回环地址可使用 HTTP；
 - SMAPI 安装只执行校验后的官方 Release，拒绝路径穿越、符号链接、特殊文件和超限压缩内容；Windows 安装器使用隐藏的新控制台并设有总超时；
+- SMAPI 卸载同样只调用已校验的官方安装器；修改前按规范化可执行文件路径检测受管与外部游戏进程，检测到运行即拒绝执行，完成后以重新检测结果为准；用户 `Mods` 不主动删除，但操作前仍建议备份；
+- GitHub 镜像只接受无凭据、端口、查询参数和片段的 HTTPS 前缀；官方 Release 元数据与摘要不经过镜像，缺少官方 SHA-256 摘要时拒绝镜像下载并提示切回直连；
 - API Key、Token、游戏路径和日志不会提交到仓库；
 - `.env` 与本地密钥文件已加入 Git 忽略规则。
 
