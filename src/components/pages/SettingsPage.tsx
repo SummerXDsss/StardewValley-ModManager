@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, App, AutoComplete, Button, Input, Select, Space, Switch, Tag } from "antd";
-import { ApiOutlined, FolderOpenOutlined, ReloadOutlined } from "@ant-design/icons";
+import { Alert, App, Button, Input, Select, Space, Switch, Tag } from "antd";
+import { ApiOutlined, ExportOutlined, FolderOpenOutlined, ReloadOutlined } from "@ant-design/icons";
 import { PageTitle } from "../shared";
 import {
   chooseGameDirectory,
@@ -10,6 +10,7 @@ import {
   getGithubDownloadSettings,
   getNexusAuthStatus,
   listAiTranslationModels,
+  openRemoteUrl,
   saveAiTranslationSettings,
   saveGithubDownloadSettings,
   setNexusApiKey,
@@ -26,6 +27,23 @@ import type {
   LaunchTarget,
 } from "../../types";
 import { formatDisplayPath } from "../../utils/path";
+
+const NEXUS_PERSONAL_API_KEYS_URL = "https://www.nexusmods.com/settings/api-keys";
+const GITHUB_PROXY_PRESET = "https://gh-proxy.com/";
+
+type GithubDownloadChoice = GithubDownloadMode | "gh-proxy";
+
+const SMAPI_LAUNCH_ARGUMENT_OPTIONS = [
+  { value: "--no-terminal", label: "--no-terminal · 关闭终端输出" },
+  { value: "--developer-mode", label: "--developer-mode · 显示 TRACE 日志" },
+  { value: "--developer-mode-off", label: "--developer-mode-off · 关闭开发者模式" },
+  { value: "--use-current-shell", label: "--use-current-shell · 使用当前 Shell（macOS/Linux）" },
+];
+
+function githubDownloadChoiceFor(settings: GithubDownloadSettings): GithubDownloadChoice {
+  if (settings.mode === "direct") return "direct";
+  return settings.customPrefix === GITHUB_PROXY_PRESET ? "gh-proxy" : "custom";
+}
 
 function hasSameOrigin(left: string | undefined, right: string) {
   if (!left || !right.trim()) return false;
@@ -67,7 +85,10 @@ export function SettingsPage({
   );
   const [nexusKey, setNexusKey] = useState("");
   const [nexusConfigured, setNexusConfigured] = useState(false);
-  const [savingNexus, setSavingNexus] = useState(false);
+  const [nexusStatusLoading, setNexusStatusLoading] = useState(true);
+  const [nexusMutation, setNexusMutation] = useState<"saving" | "clearing" | null>(null);
+  const [nexusError, setNexusError] = useState<string>();
+  const nexusMutationRef = useRef(false);
   const [translationStatus, setTranslationStatus] = useState<AiTranslationStatus>({
     configured: false,
     apiKeyConfigured: false,
@@ -88,12 +109,26 @@ export function SettingsPage({
     mode: "direct",
     customPrefix: null,
   });
-  const [githubDownloadMode, setGithubDownloadMode] = useState<GithubDownloadMode>("direct");
+  const [githubDownloadChoice, setGithubDownloadChoice] = useState<GithubDownloadChoice>("direct");
   const [githubCustomPrefix, setGithubCustomPrefix] = useState("");
   const [githubDownloadLoading, setGithubDownloadLoading] = useState(true);
   const [githubDownloadError, setGithubDownloadError] = useState<string>();
   const [githubDownloadMutation, setGithubDownloadMutation] = useState<"saving" | "clearing" | null>(null);
   const githubDownloadMutationRef = useRef(false);
+
+  const loadNexusStatus = useCallback(async () => {
+    setNexusStatusLoading(true);
+    setNexusError(undefined);
+    try {
+      const status = await getNexusAuthStatus();
+      setNexusConfigured(status.configured);
+    } catch (error) {
+      setNexusConfigured(false);
+      setNexusError(String(error));
+    } finally {
+      setNexusStatusLoading(false);
+    }
+  }, []);
 
   const loadGithubSettings = useCallback(async () => {
     setGithubDownloadLoading(true);
@@ -101,7 +136,7 @@ export function SettingsPage({
     try {
       const status = await getGithubDownloadSettings();
       setGithubDownloadStatus(status);
-      setGithubDownloadMode(status.mode);
+      setGithubDownloadChoice(githubDownloadChoiceFor(status));
       setGithubCustomPrefix(status.customPrefix ?? "");
     } catch (error) {
       setGithubDownloadError(String(error));
@@ -111,9 +146,7 @@ export function SettingsPage({
   }, []);
 
   useEffect(() => {
-    void getNexusAuthStatus()
-      .then((status) => setNexusConfigured(status.configured))
-      .catch(() => setNexusConfigured(false));
+    void loadNexusStatus();
     void getAiTranslationSettings()
       .then((status) => {
         setTranslationStatus(status);
@@ -123,7 +156,7 @@ export function SettingsPage({
       .catch((error) => message.error(String(error)))
       .finally(() => setTranslationStatusLoading(false));
     void loadGithubSettings();
-  }, [loadGithubSettings]);
+  }, [loadGithubSettings, loadNexusStatus]);
 
   useEffect(() => {
     setPathInput(dashboard.installation ? formatDisplayPath(dashboard.installation.path) : "");
@@ -148,24 +181,60 @@ export function SettingsPage({
   };
 
   const saveNexusKey = async () => {
-    setSavingNexus(true);
+    if (nexusMutationRef.current) return;
+    const apiKey = nexusKey.trim();
+    if (!apiKey) return;
+
+    nexusMutationRef.current = true;
+    setNexusMutation("saving");
+    setNexusError(undefined);
     try {
-      const status = await setNexusApiKey(nexusKey);
-      setNexusConfigured(status.configured);
+      await setNexusApiKey(apiKey);
+      const confirmedStatus = await getNexusAuthStatus();
+      if (!confirmedStatus.configured) {
+        throw new Error("Nexus API Key 已写入，但无法从系统凭据库重新读取，请重试");
+      }
+      setNexusConfigured(true);
       setNexusKey("");
       message.success("Nexus API Key 已验证并保存到系统凭据库");
     } catch (error) {
-      message.error(String(error));
+      const detail = String(error);
+      setNexusError(detail);
+      message.error(detail);
     } finally {
-      setSavingNexus(false);
+      nexusMutationRef.current = false;
+      setNexusMutation(null);
     }
   };
 
   const removeNexusKey = async () => {
-    const status = await clearNexusApiKey();
-    setNexusConfigured(status.configured);
-    setNexusKey("");
-    message.success("Nexus API Key 已清除");
+    if (nexusMutationRef.current) return;
+    nexusMutationRef.current = true;
+    setNexusMutation("clearing");
+    setNexusError(undefined);
+    try {
+      const status = await clearNexusApiKey();
+      setNexusConfigured(status.configured);
+      setNexusKey("");
+      message.success("Nexus API Key 已清除");
+    } catch (error) {
+      const detail = String(error);
+      setNexusError(detail);
+      message.error(detail);
+    } finally {
+      nexusMutationRef.current = false;
+      setNexusMutation(null);
+    }
+  };
+
+  const openNexusApiKeysPage = async () => {
+    try {
+      await openRemoteUrl(NEXUS_PERSONAL_API_KEYS_URL);
+    } catch (error) {
+      const detail = String(error);
+      setNexusError(detail);
+      message.error(detail);
+    }
   };
 
   const loadTranslationModels = async () => {
@@ -273,11 +342,15 @@ export function SettingsPage({
     setGithubDownloadError(undefined);
     try {
       const status = await saveGithubDownloadSettings({
-        mode: githubDownloadMode,
-        customPrefix: githubDownloadMode === "custom" ? githubCustomPrefix.trim() : null,
+        mode: githubDownloadChoice === "direct" ? "direct" : "custom",
+        customPrefix: githubDownloadChoice === "gh-proxy"
+          ? GITHUB_PROXY_PRESET
+          : githubDownloadChoice === "custom"
+            ? githubCustomPrefix.trim()
+            : null,
       });
       setGithubDownloadStatus(status);
-      setGithubDownloadMode(status.mode);
+      setGithubDownloadChoice(githubDownloadChoiceFor(status));
       setGithubCustomPrefix(status.customPrefix ?? "");
       message.success("GitHub 下载设置已保存");
     } catch (error) {
@@ -298,7 +371,7 @@ export function SettingsPage({
     try {
       const status = await saveGithubDownloadSettings({ mode: "direct", customPrefix: null });
       setGithubDownloadStatus(status);
-      setGithubDownloadMode("direct");
+      setGithubDownloadChoice("direct");
       setGithubCustomPrefix("");
       message.success("已清除镜像设置并恢复 GitHub 直连");
     } catch (error) {
@@ -348,16 +421,6 @@ export function SettingsPage({
       && hasSameOrigin(translationStatus.baseUrl, translationBaseUrl));
   const translationProviderReady = Boolean(translationBaseUrl.trim())
     && translationCredentialAvailable;
-  const translationModelOptions = translationModels.map((model) => ({
-    value: model.id,
-    label: (
-      <div className="ai-model-option">
-        <span>{model.id}</span>
-        {model.ownedBy && <small>{model.ownedBy}</small>}
-      </div>
-    ),
-  }));
-
   return (
     <section>
       <PageTitle title="设置" subtitle="游戏位置、启动方式与安全策略" />
@@ -378,8 +441,9 @@ export function SettingsPage({
               value={launchArguments.smapi}
               maxCount={32}
               maxTagCount="responsive"
-              options={[]}
-              open={false}
+              options={SMAPI_LAUNCH_ARGUMENT_OPTIONS}
+              optionFilterProp="label"
+              showSearch
               allowClear
               placeholder="添加 SMAPI 参数"
               onChange={(values) => updateArguments("smapi", values)}
@@ -394,7 +458,6 @@ export function SettingsPage({
               maxCount={32}
               maxTagCount="responsive"
               options={[]}
-              open={false}
               allowClear
               placeholder="添加原版游戏参数"
               onChange={(values) => updateArguments("vanilla", values)}
@@ -419,7 +482,11 @@ export function SettingsPage({
               <span>仅影响 SMAPI 安装、更新和卸载所需的 GitHub Release 资产；Mod 发布页下载不受影响。</span>
             </div>
             <Tag color={githubDownloadStatus.mode === "custom" ? "gold" : "default"}>
-              {githubDownloadStatus.mode === "custom" ? "自定义镜像" : "GitHub 直连"}
+              {githubDownloadStatus.mode === "direct"
+                ? "GitHub 直连"
+                : githubDownloadStatus.customPrefix === GITHUB_PROXY_PRESET
+                  ? "gh-proxy.com"
+                  : "自定义镜像"}
             </Tag>
           </div>
           <Alert
@@ -432,17 +499,23 @@ export function SettingsPage({
             <label htmlFor="github-download-mode">下载模式</label>
             <Select
               id="github-download-mode"
-              value={githubDownloadMode}
+              value={githubDownloadChoice}
               loading={githubDownloadLoading}
               disabled={githubDownloadLoading || githubDownloadMutation !== null}
               options={[
                 { value: "direct", label: "GitHub 直连" },
+                { value: "gh-proxy", label: "gh-proxy.com 镜像" },
                 { value: "custom", label: "自定义 HTTPS 镜像" },
               ]}
-              onChange={(value: GithubDownloadMode) => setGithubDownloadMode(value)}
+              onChange={(value: GithubDownloadChoice) => {
+                setGithubDownloadChoice(value);
+                if (value === "custom" && githubCustomPrefix === GITHUB_PROXY_PRESET) {
+                  setGithubCustomPrefix("");
+                }
+              }}
             />
           </div>
-          {githubDownloadMode === "custom" && (
+          {githubDownloadChoice === "custom" && (
             <div className="github-download-field">
               <label htmlFor="github-custom-prefix">镜像 Base URL</label>
               <Input
@@ -479,12 +552,12 @@ export function SettingsPage({
             <Button
               type="primary"
               loading={githubDownloadMutation === "saving"}
-              disabled={githubDownloadLoading || githubDownloadMutation !== null || (githubDownloadMode === "custom" && !githubCustomPrefix.trim())}
+              disabled={githubDownloadLoading || githubDownloadMutation !== null || (githubDownloadChoice === "custom" && !githubCustomPrefix.trim())}
               onClick={() => void saveGithubSettings()}
             >
               保存设置
             </Button>
-            {(githubDownloadStatus.mode === "custom" || githubDownloadMode === "custom" || githubCustomPrefix) && (
+            {(githubDownloadStatus.mode === "custom" || githubDownloadChoice !== "direct") && (
               <Button
                 loading={githubDownloadMutation === "clearing"}
                 disabled={githubDownloadLoading || githubDownloadMutation !== null}
@@ -501,22 +574,71 @@ export function SettingsPage({
           <div className="nexus-setting-status">
             <div>
               <strong>个人 API Key</strong>
-              <span>用于读取文件版本和获取官方下载地址；热门列表无需 Key。</span>
+              <span>仅接受 Nexus Mods 的 Personal API Key，不支持应用凭据、SSO Token 或 JWT；热门列表无需 Key。</span>
             </div>
-            <Tag color={nexusConfigured ? "green" : "default"}>{nexusConfigured ? "已配置" : "未配置"}</Tag>
+            <Tag color={nexusConfigured ? "green" : "default"}>
+              {nexusStatusLoading ? "读取中" : nexusConfigured ? "已配置" : "未配置"}
+            </Tag>
           </div>
           <Space.Compact block>
             <Input.Password
               value={nexusKey}
+              disabled={nexusStatusLoading || nexusMutation !== null}
               onChange={(event) => setNexusKey(event.target.value)}
               placeholder={nexusConfigured ? "输入新 Key 可替换现有凭据" : "粘贴 Nexus Mods 个人 API Key"}
-              autoComplete="off"
+              autoComplete="new-password"
             />
-            <Button type="primary" loading={savingNexus} disabled={!nexusKey.trim()} onClick={() => void saveNexusKey()}>
+            <Button
+              type="primary"
+              loading={nexusMutation === "saving"}
+              disabled={nexusStatusLoading || nexusMutation !== null || !nexusKey.trim()}
+              onClick={() => void saveNexusKey()}
+            >
               验证并保存
             </Button>
-            {nexusConfigured && <Button danger onClick={() => void removeNexusKey()}>清除</Button>}
+            {nexusConfigured && (
+              <Button
+                danger
+                loading={nexusMutation === "clearing"}
+                disabled={nexusStatusLoading || nexusMutation !== null}
+                onClick={() => void removeNexusKey()}
+              >
+                清除
+              </Button>
+            )}
           </Space.Compact>
+          {nexusError && (
+            <Alert
+              type="error"
+              showIcon
+              closable
+              message="Nexus API Key 配置失败"
+              description={nexusError}
+              action={(
+                <Button
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  loading={nexusStatusLoading}
+                  disabled={nexusMutation !== null}
+                  onClick={() => void loadNexusStatus()}
+                >
+                  重试读取
+                </Button>
+              )}
+              onClose={() => setNexusError(undefined)}
+            />
+          )}
+          <Space wrap>
+            <Button
+              type="link"
+              icon={<ExportOutlined />}
+              disabled={nexusMutation !== null}
+              onClick={() => void openNexusApiKeysPage()}
+            >
+              获取 Personal API Key
+            </Button>
+            <span>在 Nexus Mods 设置页的 Personal API Key 区域复制完整 Key。</span>
+          </Space>
         </div>
         <h2 className="settings-section-title">AI 翻译</h2>
         <div className="ai-translation-setting">
@@ -564,18 +686,22 @@ export function SettingsPage({
           <div className="ai-translation-field">
             <label htmlFor="translation-model-id">Model ID</label>
             <div className="ai-translation-model-control">
-              <AutoComplete
+              <Input
                 id="translation-model-id"
                 value={translationModelId}
-                options={translationModelOptions}
+                list={translationModels.length > 0 ? "translation-model-options" : undefined}
                 disabled={translationControlsBusy}
                 allowClear
                 placeholder="获取模型后选择，或手动输入 Model ID"
-                filterOption={(inputValue, option) => String(option?.value ?? "")
-                  .toLocaleLowerCase()
-                  .includes(inputValue.toLocaleLowerCase())}
-                onChange={updateTranslationModelId}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => updateTranslationModelId(event.target.value)}
               />
+              <datalist id="translation-model-options">
+                {translationModels.map((model) => (
+                  <option key={model.id} value={model.id} label={model.ownedBy ?? model.id} />
+                ))}
+              </datalist>
               <Button
                 icon={<ReloadOutlined />}
                 loading={translationModelsLoading}

@@ -4,9 +4,22 @@ pub mod nexus;
 pub mod smapi;
 pub mod translation;
 
-use std::process::Command;
+use std::{process::Command, sync::Mutex};
+
+use keyring::Entry;
 
 use crate::models::RemoteMod;
+
+static KEYRING_ENTRY_INIT_LOCK: Mutex<()> = Mutex::new(());
+
+pub(crate) fn keyring_entry(service: &str, user: &str) -> keyring::Result<Entry> {
+    // keyring's v1 compatibility layer lazily installs its platform store on the first Entry.
+    // Serialize construction so simultaneous settings requests cannot observe half-initialized state.
+    let _guard = KEYRING_ENTRY_INIT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Entry::new(service, user)
+}
 
 pub async fn discover() -> Result<Vec<RemoteMod>, String> {
     let mut mods = Vec::new();

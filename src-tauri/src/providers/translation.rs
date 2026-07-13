@@ -769,7 +769,7 @@ fn temporary_config_path(config_dir: &Path) -> PathBuf {
 }
 
 fn credential_entry() -> Result<Entry, String> {
-    Entry::new(KEYRING_SERVICE, KEYRING_USER)
+    super::keyring_entry(KEYRING_SERVICE, KEYRING_USER)
         .map_err(|error| format!("无法访问系统凭据库：{error}"))
 }
 

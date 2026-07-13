@@ -194,7 +194,7 @@ export default function App() {
     <>
       <Layout className="app-layout">
         <Sidebar currentPage={page} onPageChange={setPage} />
-        <Layout>
+        <Layout className="app-main">
           <Topbar
             gamePath={dashboard?.installation?.path}
             rememberLaunch={rememberLaunch}

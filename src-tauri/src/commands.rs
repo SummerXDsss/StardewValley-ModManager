@@ -388,7 +388,7 @@ pub fn open_remote_url(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_nexus_auth_status() -> NexusAuthStatus {
+pub fn get_nexus_auth_status() -> Result<NexusAuthStatus, String> {
     providers::nexus::auth_status()
 }
 
