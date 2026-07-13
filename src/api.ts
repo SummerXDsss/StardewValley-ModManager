@@ -1,13 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { demoDashboard } from "./mock";
 import type {
   Dashboard,
+  AiTranslationStatus,
   DownloadedModFile,
+  DownloadedSmapiInstaller,
   GameProcessStatus,
   LaunchRequest,
   NexusAuthStatus,
   NexusModDetails,
   RemoteMod,
+  SaveAiTranslationSettingsRequest,
+  SmapiPlatform,
+  SmapiReleaseInfo,
+  TranslateModResult,
 } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
@@ -24,6 +31,16 @@ export async function scanGamePath(gamePath: string): Promise<Dashboard> {
     return dashboard;
   }
   return invoke<Dashboard>("scan_game_path", { gamePath });
+}
+
+export async function chooseGameDirectory(): Promise<string | undefined> {
+  if (!isTauri()) return undefined;
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    title: "选择 Stardew Valley 游戏目录",
+  });
+  return typeof selected === "string" ? selected : undefined;
 }
 
 export async function setModEnabled(gamePath: string, modPath: string, enabled: boolean) {
@@ -88,6 +105,89 @@ export async function openSmapiDownload() {
     return;
   }
   await invoke("open_smapi_download");
+}
+
+export async function getLatestSmapiRelease(): Promise<SmapiReleaseInfo> {
+  if (isTauri()) return invoke<SmapiReleaseInfo>("get_latest_smapi_release");
+
+  const response = await fetch("https://api.github.com/repos/Pathoschild/SMAPI/releases/latest", {
+    headers: { Accept: "application/vnd.github+json" },
+  });
+  if (!response.ok) throw new Error(`GitHub Releases 请求失败：${response.status}`);
+  const release = await response.json() as {
+    tag_name: string;
+    html_url: string;
+    published_at?: string;
+    draft: boolean;
+    prerelease: boolean;
+    assets: Array<{ id: number; name: string; size: number; browser_download_url: string; digest?: string }>;
+  };
+  if (release.draft || release.prerelease) throw new Error("GitHub 返回的不是 SMAPI 稳定版本");
+  const assetName = `SMAPI-${release.tag_name}-installer.zip`;
+  const asset = release.assets.find((item) => item.name === assetName);
+  if (!asset) throw new Error(`Release 中没有找到 ${assetName}`);
+  const platform: SmapiPlatform = navigator.userAgent.includes("Windows")
+    ? "windows"
+    : navigator.userAgent.includes("Mac")
+      ? "macos"
+      : "linux";
+  const installerEntry = platform === "windows"
+    ? "install on Windows.bat"
+    : platform === "macos"
+      ? "install on macOS.command"
+      : "install on Linux.sh";
+  return {
+    version: release.tag_name.replace(/^v/i, ""),
+    tagName: release.tag_name,
+    pageUrl: release.html_url,
+    publishedAt: release.published_at,
+    platform,
+    installerEntry,
+    source: "githubApi",
+    asset: {
+      id: asset.id,
+      name: asset.name,
+      size: asset.size,
+      downloadUrl: asset.browser_download_url,
+      digest: asset.digest,
+    },
+  };
+}
+
+export async function downloadLatestSmapiInstaller(): Promise<DownloadedSmapiInstaller> {
+  if (isTauri()) return invoke<DownloadedSmapiInstaller>("download_latest_smapi_installer");
+  const release = await getLatestSmapiRelease();
+  window.open(release.asset.downloadUrl, "_blank", "noopener,noreferrer");
+  return {
+    path: release.asset.downloadUrl,
+    fileName: release.asset.name,
+    version: release.version,
+    size: release.asset.size ?? 0,
+    sha256: "",
+    digestVerified: false,
+  };
+}
+
+export async function getAiTranslationSettings(): Promise<AiTranslationStatus> {
+  if (!isTauri()) return { configured: false, apiKeyConfigured: false };
+  return invoke<AiTranslationStatus>("get_ai_translation_settings");
+}
+
+export async function saveAiTranslationSettings(
+  request: SaveAiTranslationSettingsRequest,
+): Promise<AiTranslationStatus> {
+  if (!isTauri()) throw new Error("AI 翻译配置需要在 Tauri 桌面应用中使用");
+  return invoke<AiTranslationStatus>("save_ai_translation_settings", { request });
+}
+
+export async function clearAiTranslationSettings(): Promise<AiTranslationStatus> {
+  if (!isTauri()) return { configured: false, apiKeyConfigured: false };
+  return invoke<AiTranslationStatus>("clear_ai_translation_settings");
+}
+
+export async function translateMod(name: string, summary: string): Promise<TranslateModResult> {
+  if (!isTauri()) throw new Error("AI 翻译需要在 Tauri 桌面应用中使用");
+  return invoke<TranslateModResult>("translate_mod", { request: { name, summary } });
 }
 
 export async function discoverMods(): Promise<RemoteMod[]> {

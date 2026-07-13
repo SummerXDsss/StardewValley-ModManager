@@ -1,19 +1,97 @@
+use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
+    ffi::OsStr,
+    fs,
+    io::Read,
     path::{Path, PathBuf},
     process::{Child, Command},
 };
+use walkdir::WalkDir;
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+use winreg::{
+    enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY},
+    RegKey,
+};
 
 use crate::models::{GameInstallation, LaunchRequest, LaunchTarget, SmapiStatus};
+
+const STEAM_APP_ID: &str = "413150";
+const MAX_KEYVALUES_FILE_SIZE: u64 = 1024 * 1024;
+const MAX_SMAPI_BUNDLED_MANIFEST_SIZE: usize = 256 * 1024;
+const GAME_PATH_CONFIG_FILE: &str = "game-path.json";
+const GAME_PATH_CONFIG_VERSION: u8 = 1;
+const MAX_GAME_PATH_CONFIG_SIZE: u64 = 16 * 1024;
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredGamePath {
+    version: u8,
+    path: String,
+}
+
+#[derive(Clone, Copy)]
+#[allow(dead_code)] // Each variant is used by its corresponding desktop target.
+enum SteamLibraryPathStyle {
+    Windows,
+    Unix,
+}
+
+#[derive(Clone, Copy)]
+#[allow(dead_code)] // The macOS layout is only constructed when compiling for macOS.
+enum SteamGameLayout {
+    Standard,
+    MacosBundle,
+}
 
 pub fn detect_game() -> Option<GameInstallation> {
     candidate_paths()
         .into_iter()
         .find_map(|path| inspect_game(&path).ok())
+}
+
+pub fn load_saved_game(config_dir: &Path) -> Result<Option<GameInstallation>, String> {
+    let config_path = config_dir.join(GAME_PATH_CONFIG_FILE);
+    let metadata = match fs::metadata(&config_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("无法读取已保存的游戏路径：{error}")),
+    };
+    if metadata.len() > MAX_GAME_PATH_CONFIG_SIZE {
+        return Err("已保存的游戏路径配置文件过大".into());
+    }
+
+    let bytes =
+        fs::read(&config_path).map_err(|error| format!("无法读取已保存的游戏路径：{error}"))?;
+    let stored: StoredGamePath = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("已保存的游戏路径配置无效：{error}"))?;
+    if stored.version != GAME_PATH_CONFIG_VERSION {
+        return Err(format!("不支持的游戏路径配置版本：{}", stored.version));
+    }
+
+    inspect_game(Path::new(&stored.path)).map(Some)
+}
+
+pub fn inspect_and_save_game(
+    config_dir: &Path,
+    game_path: &Path,
+) -> Result<GameInstallation, String> {
+    let installation = inspect_game(game_path)?;
+    let stored = StoredGamePath {
+        version: GAME_PATH_CONFIG_VERSION,
+        path: installation.path.clone(),
+    };
+    let bytes = serde_json::to_vec_pretty(&stored)
+        .map_err(|error| format!("无法序列化游戏路径配置：{error}"))?;
+    fs::create_dir_all(config_dir).map_err(|error| format!("无法创建应用配置目录：{error}"))?;
+    fs::write(config_dir.join(GAME_PATH_CONFIG_FILE), bytes)
+        .map_err(|error| format!("无法保存游戏路径：{error}"))?;
+    Ok(installation)
 }
 
 pub fn inspect_game(path: &Path) -> Result<GameInstallation, String> {
@@ -41,14 +119,122 @@ pub fn inspect_game(path: &Path) -> Result<GameInstallation, String> {
 
 pub fn inspect_smapi(path: &Path) -> SmapiStatus {
     let executable = smapi_executable(path);
+    let version = executable.as_ref().and_then(|_| smapi_version(path));
     SmapiStatus {
         installed: executable.is_some(),
-        version: None,
+        version,
         executable: executable.and_then(|item| {
             item.file_name()
                 .map(|name| name.to_string_lossy().into_owned())
         }),
     }
+}
+
+fn smapi_version(game_path: &Path) -> Option<String> {
+    smapi_dll_version(&game_path.join("StardewModdingAPI.dll"))
+        .or_else(|| smapi_bundled_mod_version(&game_path.join("Mods")))
+}
+
+fn smapi_dll_version(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    let image = pelite::PeFile::from_bytes(&bytes).ok()?;
+    let version_info = image.resources().ok()?.version_info().ok()?;
+
+    for language in version_info.translation().iter().copied() {
+        for key in ["ProductVersion", "FileVersion"] {
+            if let Some(version) = version_info
+                .value(language, key)
+                .and_then(|value| normalize_smapi_version(&value))
+            {
+                return Some(version);
+            }
+        }
+    }
+
+    let fixed = version_info.fixed()?;
+    normalize_smapi_version(&format!(
+        "{}.{}.{}.{}",
+        fixed.dwProductVersion.Major,
+        fixed.dwProductVersion.Minor,
+        fixed.dwProductVersion.Patch,
+        fixed.dwProductVersion.Build,
+    ))
+}
+
+#[derive(Deserialize)]
+struct SmapiBundledManifest {
+    #[serde(rename = "UniqueID")]
+    unique_id: String,
+    #[serde(rename = "Version")]
+    version: String,
+}
+
+fn smapi_bundled_mod_version(mods_path: &Path) -> Option<String> {
+    if !mods_path.is_dir() {
+        return None;
+    }
+    let mut versions = HashSet::new();
+    for entry in WalkDir::new(mods_path)
+        .max_depth(5)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| entry.file_name() != OsStr::new(".mod-manager-trash"))
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file() && entry.file_name() == "manifest.json")
+    {
+        let Some(content) = read_utf8_file_limited(entry.path(), MAX_SMAPI_BUNDLED_MANIFEST_SIZE)
+        else {
+            continue;
+        };
+        let Ok(manifest) = serde_json::from_str::<SmapiBundledManifest>(&content) else {
+            continue;
+        };
+        if matches!(
+            manifest.unique_id.as_str(),
+            "SMAPI.SaveBackup" | "SMAPI.ConsoleCommands"
+        ) {
+            if let Some(version) = normalize_smapi_version(&manifest.version) {
+                versions.insert(version);
+            }
+        }
+    }
+    (versions.len() == 1)
+        .then(|| versions.into_iter().next())
+        .flatten()
+}
+
+fn read_utf8_file_limited(path: &Path, max_bytes: usize) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > max_bytes as u64 {
+        return None;
+    }
+
+    let mut bytes = Vec::new();
+    file.take((max_bytes as u64).checked_add(1)?)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > max_bytes {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn normalize_smapi_version(value: &str) -> Option<String> {
+    let value = value.trim().trim_start_matches(['v', 'V']);
+    let without_build = value.split('+').next()?.trim();
+    if let Ok(version) = semver::Version::parse(without_build) {
+        return Some(version.to_string());
+    }
+
+    let mut parts = without_build.split('.').collect::<Vec<_>>();
+    if parts.len() == 4 && parts[3] == "0" {
+        parts.pop();
+        let normalized = parts.join(".");
+        if let Ok(version) = semver::Version::parse(&normalized) {
+            return Some(version.to_string());
+        }
+    }
+    None
 }
 
 // On Windows the returned child is suspended until GameProcessManager assigns its Job Object.
@@ -160,6 +346,7 @@ fn candidate_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     #[cfg(target_os = "windows")]
     {
+        paths.extend(windows_registry_game_paths());
         paths.extend([
             PathBuf::from(r"C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley"),
             PathBuf::from(r"C:\Program Files\Steam\steamapps\common\Stardew Valley"),
@@ -170,15 +357,20 @@ fn candidate_paths() -> Vec<PathBuf> {
     }
     #[cfg(target_os = "linux")]
     if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".local/share/Steam/steamapps/common/Stardew Valley"));
-        paths.push(home.join(".steam/steam/steamapps/common/Stardew Valley"));
-        paths.push(home.join(".steam/debian-installation/steamapps/common/Stardew Valley"));
-        paths.push(home.join(
-            ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/common/Stardew Valley",
-        ));
-        paths.push(
-            home.join("snap/steam/common/.local/share/Steam/steamapps/common/Stardew Valley"),
-        );
+        let steam_roots = [
+            home.join(".local/share/Steam"),
+            home.join(".steam/steam"),
+            home.join(".steam/debian-installation"),
+            home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam"),
+            home.join("snap/steam/common/.local/share/Steam"),
+        ];
+        for steam_root in steam_roots {
+            paths.extend(steam_game_paths(
+                &steam_root,
+                SteamLibraryPathStyle::Unix,
+                SteamGameLayout::Standard,
+            ));
+        }
         paths.push(home.join("GOGGames/StardewValley/game"));
     }
     #[cfg(target_os = "macos")]
@@ -188,13 +380,446 @@ fn candidate_paths() -> Vec<PathBuf> {
         ));
         if let Some(home) = dirs::home_dir() {
             paths.push(home.join("Applications/Stardew Valley.app/Contents/MacOS"));
-            paths.push(home.join(
-                "Library/Application Support/Steam/steamapps/common/Stardew Valley/Contents/MacOS",
-            ));
-            paths.push(home.join(
-                "Library/Application Support/Steam/SteamApps/common/Stardew Valley/Contents/MacOS",
+            paths.extend(steam_game_paths(
+                &home.join("Library/Application Support/Steam"),
+                SteamLibraryPathStyle::Unix,
+                SteamGameLayout::MacosBundle,
             ));
         }
     }
+    deduplicate_paths(paths)
+}
+
+fn deduplicate_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut unique = Vec::new();
+    for path in paths {
+        push_unique_path(&mut unique, path);
+    }
+    unique
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if path.as_os_str().is_empty() {
+        return;
+    }
+    #[cfg(windows)]
+    let exists = paths.iter().any(|candidate| {
+        candidate
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&path.to_string_lossy())
+    });
+    #[cfg(not(windows))]
+    let exists = paths.contains(&path);
+
+    if !exists {
+        paths.push(path);
+    }
+}
+
+fn read_keyvalues_file(path: &Path) -> Option<String> {
+    let metadata = fs::metadata(path).ok()?;
+    if metadata.len() > MAX_KEYVALUES_FILE_SIZE {
+        return None;
+    }
+    fs::read_to_string(path).ok()
+}
+
+fn vdf_string<'a>(object: &'a keyvalues_parser::Obj<'_>, key: &str) -> Option<&'a str> {
+    object
+        .iter()
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(key))
+        .and_then(|(_, values)| values.first())
+        .and_then(keyvalues_parser::Value::get_str)
+}
+
+fn parse_steam_library_paths(content: &str, path_style: SteamLibraryPathStyle) -> Vec<PathBuf> {
+    let Ok(document) = keyvalues_parser::parse(content) else {
+        return Vec::new();
+    };
+    let Some(libraries) = document.value.get_obj() else {
+        return Vec::new();
+    };
+
+    let mut paths = Vec::new();
+    for (index, values) in libraries.iter() {
+        if !index.chars().all(|character| character.is_ascii_digit()) {
+            continue;
+        }
+        for value in values {
+            let path = value
+                .get_obj()
+                .and_then(|library| vdf_string(library, "path"))
+                .or_else(|| value.get_str());
+            if let Some(path) = path.filter(|path| is_absolute_steam_library_path(path, path_style))
+            {
+                push_unique_path(&mut paths, PathBuf::from(path));
+            }
+        }
+    }
     paths
+}
+
+fn is_absolute_steam_library_path(path: &str, path_style: SteamLibraryPathStyle) -> bool {
+    if path.is_empty() || path.contains('\0') {
+        return false;
+    }
+    match path_style {
+        SteamLibraryPathStyle::Windows => is_absolute_windows_path(path),
+        SteamLibraryPathStyle::Unix => path.starts_with('/'),
+    }
+}
+
+fn is_absolute_windows_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    (bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/'))
+        || path.starts_with(r"\\")
+}
+
+fn parse_app_manifest_install_dir(content: &str) -> Option<PathBuf> {
+    let document = keyvalues_parser::parse(content).ok()?;
+    let app_state = document.value.get_obj()?;
+    if vdf_string(app_state, "appid")? != STEAM_APP_ID {
+        return None;
+    }
+
+    let install_dir = vdf_string(app_state, "installdir")?.trim();
+    let normalized = install_dir.replace('\\', "/");
+    if normalized.is_empty()
+        || normalized.starts_with('/')
+        || normalized.contains(':')
+        || normalized
+            .split('/')
+            .any(|component| component.is_empty() || matches!(component, "." | ".."))
+    {
+        return None;
+    }
+    Some(PathBuf::from(install_dir))
+}
+
+fn steam_game_paths(
+    steam_root: &Path,
+    path_style: SteamLibraryPathStyle,
+    layout: SteamGameLayout,
+) -> Vec<PathBuf> {
+    let mut libraries = vec![steam_root.to_path_buf()];
+    for steamapps_name in steamapps_directory_names(layout) {
+        let library_file = steam_root.join(steamapps_name).join("libraryfolders.vdf");
+        if let Some(content) = read_keyvalues_file(&library_file) {
+            for path in parse_steam_library_paths(&content, path_style) {
+                push_unique_path(&mut libraries, path);
+            }
+        }
+    }
+
+    let mut candidates = Vec::new();
+    for library in libraries {
+        for steamapps_name in steamapps_directory_names(layout) {
+            let steamapps = library.join(steamapps_name);
+            let manifest = steamapps.join(format!("appmanifest_{STEAM_APP_ID}.acf"));
+            if let Some(content) = read_keyvalues_file(&manifest) {
+                if let Some(install_dir) = parse_app_manifest_install_dir(&content) {
+                    push_unique_path(
+                        &mut candidates,
+                        steam_game_directory(&steamapps, &install_dir, layout),
+                    );
+                }
+            }
+            push_unique_path(
+                &mut candidates,
+                steam_game_directory(&steamapps, Path::new("Stardew Valley"), layout),
+            );
+        }
+    }
+    candidates
+}
+
+fn steamapps_directory_names(layout: SteamGameLayout) -> &'static [&'static str] {
+    match layout {
+        SteamGameLayout::Standard => &["steamapps"],
+        SteamGameLayout::MacosBundle => &["steamapps", "SteamApps"],
+    }
+}
+
+fn steam_game_directory(steamapps: &Path, install_dir: &Path, layout: SteamGameLayout) -> PathBuf {
+    let directory = steamapps.join("common").join(install_dir);
+    match layout {
+        SteamGameLayout::Standard => directory,
+        SteamGameLayout::MacosBundle => directory.join("Contents/MacOS"),
+    }
+}
+
+#[cfg(windows)]
+fn registry_string(root: &RegKey, key: &str, value: &str, flags: u32) -> Option<String> {
+    root.open_subkey_with_flags(key, flags)
+        .ok()?
+        .get_value::<String, _>(value)
+        .ok()
+        .map(|value| value.trim().trim_matches('"').to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(windows)]
+fn steam_roots_from_registry() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    for value_name in ["SteamPath", "InstallPath"] {
+        if let Some(path) = registry_string(&hkcu, r"Software\Valve\Steam", value_name, KEY_READ) {
+            push_unique_path(&mut roots, PathBuf::from(path));
+        }
+    }
+    if let Some(executable) = registry_string(&hkcu, r"Software\Valve\Steam", "SteamExe", KEY_READ)
+    {
+        if let Some(parent) = Path::new(&executable).parent() {
+            push_unique_path(&mut roots, parent.to_path_buf());
+        }
+    }
+
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
+        if let Some(path) = registry_string(
+            &hklm,
+            r"SOFTWARE\Valve\Steam",
+            "InstallPath",
+            KEY_READ | view,
+        ) {
+            push_unique_path(&mut roots, PathBuf::from(path));
+        }
+    }
+    roots
+}
+
+#[cfg(windows)]
+fn collect_gog_paths(root: &RegKey, flags: u32, paths: &mut Vec<PathBuf>) {
+    let Ok(games) = root.open_subkey_with_flags(r"SOFTWARE\GOG.com\Games", flags) else {
+        return;
+    };
+    for key_name in games.enum_keys().flatten() {
+        let Ok(game) = games.open_subkey(&key_name) else {
+            continue;
+        };
+        let game_name = game.get_value::<String, _>("gameName").unwrap_or_default();
+        if key_name != "1453375253" && !game_name.eq_ignore_ascii_case("Stardew Valley") {
+            continue;
+        }
+        for value_name in ["path", "workingDir"] {
+            if let Ok(path) = game.get_value::<String, _>(value_name) {
+                push_unique_path(paths, PathBuf::from(path.trim().trim_matches('"')));
+            }
+        }
+        if let Ok(executable) = game.get_value::<String, _>("exe") {
+            if let Some(parent) = Path::new(executable.trim().trim_matches('"')).parent() {
+                push_unique_path(paths, parent.to_path_buf());
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_registry_game_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for steam_root in steam_roots_from_registry() {
+        for path in steam_game_paths(
+            &steam_root,
+            SteamLibraryPathStyle::Windows,
+            SteamGameLayout::Standard,
+        ) {
+            push_unique_path(&mut paths, path);
+        }
+    }
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    collect_gog_paths(&hkcu, KEY_READ, &mut paths);
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
+        collect_gog_paths(&hklm, KEY_READ | view, &mut paths);
+    }
+    paths
+}
+
+#[cfg(test)]
+mod detection_tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    #[test]
+    fn persists_and_revalidates_a_manually_selected_game_path() {
+        let root = unique_temp_directory();
+        let game_dir = root.join("game");
+        let config_dir = root.join("config");
+        fs::create_dir_all(&game_dir).unwrap();
+        #[cfg(windows)]
+        let executable = "StardewValley.exe";
+        #[cfg(not(windows))]
+        let executable = "StardewValley";
+        fs::write(game_dir.join(executable), b"test executable").unwrap();
+
+        let saved = inspect_and_save_game(&config_dir, &game_dir).unwrap();
+        let loaded = load_saved_game(&config_dir).unwrap().unwrap();
+        assert_eq!(loaded.path, saved.path);
+        assert_eq!(loaded.executable, executable);
+
+        fs::remove_file(game_dir.join(executable)).unwrap();
+        assert!(load_saved_game(&config_dir).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parses_modern_and_legacy_steam_library_folders() {
+        let modern = r#"
+            "libraryfolders"
+            {
+                "0" { "path" "C:\\Program Files (x86)\\Steam" "apps" { "228980" "1" } }
+                "1" { "path" "D:\\SteamLibrary" "apps" { "413150" "1" } }
+            }
+        "#;
+        assert_eq!(
+            parse_steam_library_paths(modern, SteamLibraryPathStyle::Windows),
+            vec![
+                PathBuf::from(r"C:\Program Files (x86)\Steam"),
+                PathBuf::from(r"D:\SteamLibrary"),
+            ]
+        );
+
+        let legacy = r#"
+            "LibraryFolders"
+            {
+                "TimeNextStatsReport" "0"
+                "1" "E:\\Steam Library"
+            }
+        "#;
+        assert_eq!(
+            parse_steam_library_paths(legacy, SteamLibraryPathStyle::Windows),
+            vec![PathBuf::from(r"E:\Steam Library")]
+        );
+    }
+
+    #[test]
+    fn parses_unix_steam_libraries_and_applies_the_macos_bundle_layout() {
+        let libraries = r#"
+            "libraryfolders"
+            {
+                "0" { "path" "/Users/farmer/Library/Application Support/Steam" }
+                "1" { "path" "/Volumes/Games/SteamLibrary" "apps" { "413150" "1" } }
+                "2" { "path" "relative/library" }
+            }
+        "#;
+        assert_eq!(
+            parse_steam_library_paths(libraries, SteamLibraryPathStyle::Unix),
+            vec![
+                PathBuf::from("/Users/farmer/Library/Application Support/Steam"),
+                PathBuf::from("/Volumes/Games/SteamLibrary"),
+            ]
+        );
+
+        assert_eq!(
+            steam_game_directory(
+                Path::new("/Volumes/Games/SteamLibrary/steamapps"),
+                Path::new("Stardew Valley"),
+                SteamGameLayout::MacosBundle,
+            ),
+            PathBuf::from(
+                "/Volumes/Games/SteamLibrary/steamapps/common/Stardew Valley/Contents/MacOS"
+            )
+        );
+    }
+
+    #[test]
+    fn bundled_smapi_scan_ignores_the_manager_trash() {
+        let root = unique_temp_directory();
+        let mods = root.join("Mods");
+        write_smapi_manifest(
+            &mods.join("ConsoleCommands/manifest.json"),
+            "SMAPI.ConsoleCommands",
+            "4.5.2",
+            0,
+        );
+        write_smapi_manifest(
+            &mods.join(".mod-manager-trash/old/manifest.json"),
+            "SMAPI.SaveBackup",
+            "4.4.0",
+            0,
+        );
+
+        assert_eq!(smapi_bundled_mod_version(&mods), Some("4.5.2".into()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bundled_smapi_scan_skips_oversized_manifests() {
+        let root = unique_temp_directory();
+        let mods = root.join("Mods");
+        write_smapi_manifest(
+            &mods.join("ConsoleCommands/manifest.json"),
+            "SMAPI.ConsoleCommands",
+            "4.5.2",
+            0,
+        );
+        write_smapi_manifest(
+            &mods.join("Oversized/manifest.json"),
+            "SMAPI.SaveBackup",
+            "9.9.9",
+            MAX_SMAPI_BUNDLED_MANIFEST_SIZE,
+        );
+
+        assert_eq!(smapi_bundled_mod_version(&mods), Some("4.5.2".into()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parses_only_safe_stardew_valley_app_manifests() {
+        let valid = r#"
+            "AppState"
+            {
+                "appid" "413150"
+                "installdir" "Stardew Valley"
+            }
+        "#;
+        assert_eq!(
+            parse_app_manifest_install_dir(valid),
+            Some(PathBuf::from("Stardew Valley"))
+        );
+
+        let wrong_app = valid.replace("413150", "12345");
+        assert_eq!(parse_app_manifest_install_dir(&wrong_app), None);
+
+        let traversal = valid.replace("Stardew Valley", r"..\\outside");
+        assert_eq!(parse_app_manifest_install_dir(&traversal), None);
+    }
+
+    #[test]
+    fn normalizes_smapi_versions_for_display_and_comparison() {
+        assert_eq!(
+            normalize_smapi_version("4.5.2+commit"),
+            Some("4.5.2".into())
+        );
+        assert_eq!(normalize_smapi_version("4.5.2.0"), Some("4.5.2".into()));
+        assert_eq!(normalize_smapi_version("v4.5.2"), Some("4.5.2".into()));
+        assert_eq!(
+            normalize_smapi_version("v4.5.2-beta.1+commit"),
+            Some("4.5.2-beta.1".into())
+        );
+        assert_eq!(normalize_smapi_version("6.0.0 runtime"), None);
+    }
+
+    fn write_smapi_manifest(path: &Path, unique_id: &str, version: &str, trailing_spaces: usize) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut content = format!(r#"{{"UniqueID":"{unique_id}","Version":"{version}"}}"#);
+        content.push_str(&" ".repeat(trailing_spaces));
+        fs::write(path, content).unwrap();
+    }
+
+    fn unique_temp_directory() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "valley-steward-game-test-{}-{nonce}",
+            std::process::id()
+        ))
+    }
 }

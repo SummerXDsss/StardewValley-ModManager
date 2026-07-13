@@ -24,10 +24,30 @@ export function OverviewPage({
 }: OverviewPageProps) {
   const enabled = dashboard.mods.filter((mod) => mod.enabled).length;
   const updates = dashboard.mods.filter((mod) => mod.updateAvailable).length;
+  const invalidMods = dashboard.mods.filter((mod) => mod.health === "error").length;
+  const healthScore = Math.max(
+    0,
+    (dashboard.installation ? 40 : 0)
+      + (dashboard.smapi.installed ? 30 : 0)
+      + Math.max(0, 20 - invalidMods * 5)
+      + Math.max(0, 10 - updates * 2),
+  );
+  const healthSummary = !dashboard.installation
+    ? "尚未确认游戏目录，请先完成首次设置。"
+    : !dashboard.smapi.installed
+      ? "尚未检测到 SMAPI，可在 SMAPI 页面查看官方稳定版。"
+      : invalidMods > 0
+        ? `${invalidMods} 个 Mod 清单无法解析，请在 Mod 列表中处理。`
+        : updates > 0
+          ? `检测到 ${updates} 个 Mod 标记了可用更新。`
+          : `已检测到 SMAPI ${dashboard.smapi.version ?? "已安装"}，当前未发现 Mod 清单错误。`;
 
   return (
     <section>
-      <PageTitle title="下午好，农场主" subtitle="环境已就绪，可以安全管理你的模组。" />
+      <PageTitle
+        title="下午好，农场主"
+        subtitle={dashboard.installation ? "已读取本地游戏环境与 Mod 状态。" : "请先设置 Stardew Valley 游戏目录。"}
+      />
       <div className="status-strip">
         <StatusItem
           label="游戏目录"
@@ -61,22 +81,22 @@ export function OverviewPage({
               </div>
               <div>
                 <strong>{updates} 个 Mod 可以更新</strong>
-                <p>更新前会自动保留配置与回滚快照</p>
+                <p>进入 Mod 列表查看版本与文件状态</p>
               </div>
-              <Button>检查更新</Button>
+              <Button onClick={() => onPageChange("mods")}>查看 Mod</Button>
             </div>
           ) : (
-            <Empty description="一切都是最新状态" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            <Empty description="当前未发现待处理更新" image={Empty.PRESENTED_IMAGE_SIMPLE} />
           )}
         </div>
         <aside className="health-panel">
           <div>
             <span className="eyebrow">环境健康度</span>
-            <strong className="health-score">92</strong>
+            <strong className="health-score">{healthScore}</strong>
             <span>/ 100</span>
           </div>
-          <Progress percent={92} showInfo={false} strokeColor="#2f6f4e" railColor="#dce3dc" />
-          <p>SMAPI 与游戏版本匹配。处理 1 个更新后可达到最佳状态。</p>
+          <Progress percent={healthScore} showInfo={false} strokeColor="#2f6f4e" railColor="#dce3dc" />
+          <p>{healthSummary}</p>
         </aside>
       </div>
       <div className="recent-section">

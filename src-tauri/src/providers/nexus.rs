@@ -21,7 +21,7 @@ const API_BASE: &str = "https://api.nexusmods.com/v3";
 const LEGACY_API_BASE: &str = "https://api.nexusmods.com/v1";
 const TRENDING_URL: &str = "https://api.nexusmods.com/v3/games/stardewvalley/trending-mods";
 const CACHE_TTL: Duration = Duration::from_secs(15 * 60);
-const KEYRING_SERVICE: &str = "com.valleysteward.app";
+const KEYRING_SERVICE: &str = "com.summerxdsss.valleysteward";
 const KEYRING_USER: &str = "nexus-api-key";
 
 static CACHE: OnceLock<Mutex<Option<CachedMods>>> = OnceLock::new();
@@ -404,9 +404,8 @@ fn validate_numeric_id(value: &str, label: &str) -> Result<(), String> {
 
 fn game_scoped_id_from_url(value: &str) -> Option<String> {
     value
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .next_back()
+        .rsplit('/')
+        .find(|part| !part.is_empty())
         .filter(|part| part.bytes().all(|byte| byte.is_ascii_digit()))
         .map(ToOwned::to_owned)
 }

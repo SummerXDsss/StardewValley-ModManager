@@ -8,8 +8,14 @@ if (process.platform === "win32") {
   const windowsScript = fileURLToPath(new URL("./tauri-windows.ps1", import.meta.url));
   result = spawnSync(
     "powershell.exe",
-    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", windowsScript, ...tauriArgs],
-    { stdio: "inherit" },
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", windowsScript],
+    {
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        VALLEY_STEWARD_TAURI_ARGS: JSON.stringify(tauriArgs),
+      },
+    },
   );
 } else {
   result = spawnSync("npm", ["run", "tauri:raw", "--", ...tauriArgs], { stdio: "inherit" });

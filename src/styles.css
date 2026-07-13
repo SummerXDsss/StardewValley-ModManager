@@ -179,12 +179,47 @@ button, input {
   background: var(--color-muted);
   border-radius: 6px;
   font-weight: 500;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
 }
 
-.path-chip span { 
+.path-chip:hover {
+  background: #DDECEF;
+}
+
+.path-chip.missing {
+  color: var(--color-destructive);
+}
+
+.path-chip-label {
   overflow: hidden; 
   text-overflow: ellipsis; 
   white-space: nowrap;
+}
+
+.path-chip-arrow {
+  margin-left: auto;
+  color: var(--color-dark-muted);
+  font-size: 11px;
+}
+
+.path-popover {
+  width: min(460px, calc(100vw - 48px));
+  display: grid;
+  gap: 8px;
+}
+
+.path-popover > span {
+  overflow-wrap: anywhere;
+  color: var(--color-foreground);
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+}
+
+.path-popover .ant-btn {
+  width: fit-content;
+  padding-inline: 0;
 }
 
 .game-process-controls {
@@ -563,6 +598,25 @@ button, input {
   font-size: 14px;
 }
 
+.remote-mod-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.remote-mod-summary > span {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.remote-mod-summary .ant-btn {
+  flex: 0 0 auto;
+  height: 26px;
+  padding-inline: 5px;
+  color: #0F766E;
+  font-size: 12px;
+}
+
 .remote-mod small { 
   color: var(--color-dark-muted);
   font-size: 13px;
@@ -626,7 +680,8 @@ button, input {
   gap: 14px;
 }
 
-.settings-form > label { 
+.settings-form > label,
+.settings-form > .settings-section-title {
   margin-top: 16px; 
   color: var(--color-foreground); 
   font-weight: 600;
@@ -719,6 +774,26 @@ button, input {
   border-radius: 8px;
 }
 
+.ai-translation-setting {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  background: #FFFFFF;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.ai-translation-field {
+  display: grid;
+  gap: 6px;
+}
+
+.ai-translation-field > label {
+  color: var(--color-foreground);
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .nexus-setting-status,
 .nexus-detail-summary,
 .nexus-file > header {
@@ -743,6 +818,109 @@ button, input {
 .nexus-version small {
   color: var(--color-dark-muted);
   font-size: 13px;
+}
+
+/* First-run setup */
+.first-run-setup {
+  display: grid;
+  gap: 26px;
+  padding: 8px 4px 2px;
+}
+
+.setup-heading span {
+  color: var(--color-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.setup-heading h2 {
+  margin: 2px 0 0;
+  color: var(--color-foreground);
+  font-size: 24px;
+}
+
+.setup-step {
+  min-height: 230px;
+  display: grid;
+  align-content: start;
+  gap: 16px;
+}
+
+.setup-step > label {
+  color: var(--color-foreground);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.setup-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: auto;
+  padding-top: 18px;
+}
+
+.setup-actions.split {
+  justify-content: space-between;
+}
+
+.setup-smapi-status {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+}
+
+.setup-smapi-status > .anticon {
+  margin-top: 4px;
+  color: var(--color-primary);
+  font-size: 42px;
+}
+
+.setup-smapi-status h3,
+.setup-complete h3 {
+  margin: 8px 0 2px;
+  color: var(--color-foreground);
+  font-size: 20px;
+}
+
+.setup-smapi-status p {
+  margin: 0;
+  color: var(--color-dark-muted);
+}
+
+.setup-smapi-status .setup-actions {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.setup-complete {
+  justify-items: center;
+  text-align: center;
+}
+
+.setup-complete > .anticon {
+  color: var(--color-primary);
+  font-size: 48px;
+}
+
+.setup-summary {
+  width: min(420px, 100%);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px 24px;
+  padding: 14px 0;
+  border-block: 1px solid var(--color-border);
+  text-align: left;
+}
+
+.setup-summary span {
+  color: var(--color-dark-muted);
+}
+
+.setup-summary strong {
+  color: var(--color-foreground);
+}
+
+.setup-complete .setup-actions {
+  width: 100%;
 }
 
 .drawer-loading {
@@ -852,7 +1030,8 @@ button, input {
     padding-inline: 10px;
   }
 
-  .path-chip span {
+  .path-chip-label,
+  .path-chip-arrow {
     display: none;
   }
 

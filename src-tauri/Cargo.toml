@@ -2,7 +2,7 @@
 name = "valley-steward"
 version = "0.1.0"
 description = "A safe Stardew Valley mod manager"
-authors = ["Valley Steward contributors"]
+authors = ["SummerXDsss <3104391686@qq.com>"]
 edition = "2021"
 
 [lib]
@@ -16,10 +16,15 @@ tauri-build = { version = "2", features = [] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dirs = "6"
 keyring = "4.1"
+keyvalues-parser = "0.2.4"
+pelite = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tauri = { version = "2.9.3", features = [] }
+tauri-plugin-dialog = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-util"] }
 walkdir = "2"
@@ -29,6 +34,7 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }
+winreg = "0.55"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

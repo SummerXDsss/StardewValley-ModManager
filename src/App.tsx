@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { App as AntApp, Layout, Spin } from "antd";
 import { Sidebar, Topbar } from "./components/layout";
+import { FirstRunSetup } from "./components/onboarding";
 import { OverviewPage, ModsPage, DownloadsPage, SmapiPage, SettingsPage } from "./components/pages";
 import { useDashboard, useGameProcess, useLaunchArguments, useLaunchPreference } from "./hooks";
 import type { LaunchPreference } from "./hooks";
@@ -18,10 +19,14 @@ import type { GameProcessAction } from "./components/layout/Topbar";
 import type { InstalledMod, LaunchTarget } from "./types";
 
 const { Content } = Layout;
+const ONBOARDING_KEY = "valleySteward.onboardingComplete.v2";
 
 export default function App() {
   const { message, modal } = AntApp.useApp();
   const [page, setPage] = useState("overview");
+  const [onboardingComplete, setOnboardingComplete] = useState(
+    () => localStorage.getItem(ONBOARDING_KEY) === "true",
+  );
   const { dashboard, setDashboard, loading, setLoading, refresh, updateMod } = useDashboard();
   const { rememberLaunch, launchPreference, changeRememberLaunch, updateLaunchPreference } = useLaunchPreference();
   const { launchArguments, updateLaunchArguments } = useLaunchArguments();
@@ -185,26 +190,40 @@ export default function App() {
   };
 
   return (
-    <Layout className="app-layout">
-      <Sidebar currentPage={page} onPageChange={setPage} />
-      <Layout>
-        <Topbar
-          gamePath={dashboard?.installation?.path}
-          rememberLaunch={rememberLaunch}
-          onRememberLaunchChange={changeRememberLaunch}
-          onLaunch={runLaunchChoice}
-          launchPreference={launchPreference}
-          processStatus={gameProcess}
-          processAction={gameProcessAction}
-          monitoring={monitoring}
-          monitorError={monitorError}
-          onStop={() => void handleStopGame()}
-          onRestart={() => void handleRestartGame()}
-        />
-        <Content className="content">
-          <Spin spinning={loading}>{renderPage()}</Spin>
-        </Content>
+    <>
+      <Layout className="app-layout">
+        <Sidebar currentPage={page} onPageChange={setPage} />
+        <Layout>
+          <Topbar
+            gamePath={dashboard?.installation?.path}
+            rememberLaunch={rememberLaunch}
+            onRememberLaunchChange={changeRememberLaunch}
+            onLaunch={runLaunchChoice}
+            launchPreference={launchPreference}
+            processStatus={gameProcess}
+            processAction={gameProcessAction}
+            monitoring={monitoring}
+            monitorError={monitorError}
+            onEditGamePath={() => setPage("settings")}
+            onStop={() => void handleStopGame()}
+            onRestart={() => void handleRestartGame()}
+          />
+          <Content className="content">
+            <Spin spinning={loading}>{renderPage()}</Spin>
+          </Content>
+        </Layout>
       </Layout>
-    </Layout>
+      {dashboard && (
+        <FirstRunSetup
+          open={!onboardingComplete || !dashboard.installation}
+          dashboard={dashboard}
+          onDashboardUpdate={setDashboard}
+          onComplete={() => {
+            localStorage.setItem(ONBOARDING_KEY, "true");
+            setOnboardingComplete(true);
+          }}
+        />
+      )}
+    </>
   );
 }

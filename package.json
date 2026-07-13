@@ -2,6 +2,7 @@
   "name": "valley-steward",
   "private": true,
   "version": "0.1.0",
+  "author": "SummerXDsss <3104391686@qq.com>",
   "type": "module",
   "scripts": {
     "dev": "vite",

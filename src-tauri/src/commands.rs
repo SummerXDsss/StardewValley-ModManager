@@ -12,8 +12,13 @@ use crate::{
 };
 
 #[tauri::command]
-pub fn get_dashboard() -> Dashboard {
-    match game::detect_game() {
+pub fn get_dashboard(app: tauri::AppHandle) -> Dashboard {
+    let saved = app
+        .path()
+        .app_config_dir()
+        .ok()
+        .and_then(|config_dir| game::load_saved_game(&config_dir).ok().flatten());
+    match saved.or_else(game::detect_game) {
         Some(installation) => dashboard_for(&installation.path),
         None => Dashboard {
             installation: None,
@@ -29,8 +34,12 @@ pub fn get_dashboard() -> Dashboard {
 }
 
 #[tauri::command]
-pub fn scan_game_path(game_path: String) -> Result<Dashboard, String> {
-    let installation = game::inspect_game(Path::new(&game_path))?;
+pub fn scan_game_path(app: tauri::AppHandle, game_path: String) -> Result<Dashboard, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("无法确定应用配置目录：{error}"))?;
+    let installation = game::inspect_and_save_game(&config_dir, Path::new(&game_path))?;
     Ok(dashboard_for(&installation.path))
 }
 
@@ -63,6 +72,68 @@ pub fn open_mod_folder(game_path: String, mod_path: String) -> Result<(), String
 #[tauri::command]
 pub fn open_smapi_download() -> Result<(), String> {
     game::open_smapi_download()
+}
+
+#[tauri::command]
+pub async fn get_latest_smapi_release() -> Result<providers::smapi::SmapiReleaseInfo, String> {
+    providers::smapi::latest_release().await
+}
+
+#[tauri::command]
+pub async fn download_latest_smapi_installer(
+    app: tauri::AppHandle,
+) -> Result<providers::smapi::DownloadedSmapiInstaller, String> {
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("无法确定应用缓存目录：{error}"))?;
+    providers::smapi::download_latest_installer(&cache_dir).await
+}
+
+#[tauri::command]
+pub fn get_ai_translation_settings(
+    app: tauri::AppHandle,
+) -> Result<providers::translation::AiTranslationStatus, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("无法确定应用配置目录：{error}"))?;
+    providers::translation::get_status(&config_dir)
+}
+
+#[tauri::command]
+pub fn save_ai_translation_settings(
+    app: tauri::AppHandle,
+    request: providers::translation::SaveAiTranslationSettingsRequest,
+) -> Result<providers::translation::AiTranslationStatus, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("无法确定应用配置目录：{error}"))?;
+    providers::translation::save_settings(&config_dir, request)
+}
+
+#[tauri::command]
+pub fn clear_ai_translation_settings(
+    app: tauri::AppHandle,
+) -> Result<providers::translation::AiTranslationStatus, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("无法确定应用配置目录：{error}"))?;
+    providers::translation::clear_settings(&config_dir)
+}
+
+#[tauri::command]
+pub async fn translate_mod(
+    app: tauri::AppHandle,
+    request: providers::translation::TranslateModRequest,
+) -> Result<providers::translation::TranslateModResult, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("无法确定应用配置目录：{error}"))?;
+    providers::translation::translate_mod(&config_dir, request).await
 }
 
 #[tauri::command]

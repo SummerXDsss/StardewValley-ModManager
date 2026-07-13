@@ -106,3 +106,49 @@ export interface DownloadedModFile {
   path: string;
   fileName: string;
 }
+
+export type SmapiPlatform = "windows" | "macos" | "linux";
+
+export interface SmapiReleaseInfo {
+  version: string;
+  tagName: string;
+  pageUrl: string;
+  publishedAt?: string;
+  platform: SmapiPlatform;
+  installerEntry: string;
+  source: "githubApi" | "githubLatestRedirect";
+  asset: {
+    id?: number;
+    name: string;
+    size?: number;
+    downloadUrl: string;
+    digest?: string;
+  };
+}
+
+export interface DownloadedSmapiInstaller {
+  path: string;
+  fileName: string;
+  version: string;
+  size: number;
+  sha256: string;
+  digestVerified: boolean;
+}
+
+export interface AiTranslationStatus {
+  configured: boolean;
+  apiKeyConfigured: boolean;
+  baseUrl?: string;
+  modelId?: string;
+}
+
+export interface SaveAiTranslationSettingsRequest {
+  baseUrl: string;
+  modelId: string;
+  apiKey?: string;
+}
+
+export interface TranslateModResult {
+  name: string;
+  summary: string;
+}

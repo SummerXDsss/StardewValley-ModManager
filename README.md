@@ -8,9 +8,11 @@ Valley Steward 是一个面向《星露谷物语》PC 玩家的轻量 Mod 管理
 
 ### 游戏与 SMAPI
 
-- 自动探测 Steam、GOG 和 Xbox App 的常见游戏目录；
+- Windows 通过注册表定位 Steam，再解析 `libraryfolders.vdf` 与 App 413150 清单发现非默认库；同时保留 GOG、Xbox App 与跨平台常见路径；
 - 支持手动填写并验证游戏路径；
-- 检测 Stardew Valley 与 SMAPI 可执行文件；
+- 首次启动引导用户确认自动检测路径、SMAPI 状态与安装包；顶部默认隐藏完整路径，点击后可查看或修改；
+- 检测 Stardew Valley 与 SMAPI 可执行文件，并从 DLL 版本资源或官方 Mod 清单读取 SMAPI 版本；
+- 读取 `Pathoschild/SMAPI` 最新稳定 Release，严格选择标准跨平台安装包，限制大小并计算 SHA-256；GitHub 提供摘要时会进一步核验；
 - 一键启动原版游戏或 SMAPI；
 - 支持通过 `--mods-path` 启动指定 Mod 配置目录；
 - 可选择“记住上次选择”，下次继续使用相同启动模式；
@@ -37,6 +39,7 @@ Valley Steward 是一个面向《星露谷物语》PC 玩家的轻量 Mod 管理
 - GitHub Search 与 Releases 官方 API；
 - 聚合搜索、来源筛选、缩略图、版本和热度；
 - GitHub Release 存在 `.zip` 或 `.7z` 发布包时提供直接下载入口；
+- 支持用户配置 OpenAI-compatible Base URL、Model ID 和 API Key，一键翻译 Mod 名称与简介；
 - 仅允许打开受信任上游域名的 HTTPS 链接；
 - Rust provider 缓存上游结果 15 分钟，降低限流风险。
 
@@ -128,6 +131,9 @@ npm run tauri -- info
 
 # 构建桌面程序
 npm run tauri -- build
+
+# 构建独立标识的 Windows Smoke 变体（不会读写正式应用配置）
+npm run tauri -- build --debug --no-bundle --config src-tauri/tauri.smoke.conf.json
 ```
 
 Windows 下 Rust 后端检查需要加载 MSVC 环境。可以使用项目脚本进入 Tauri 构建流程，或在 Developer PowerShell 中执行：
@@ -151,6 +157,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 |   |   |-- services/           # 游戏探测与 Mod 文件操作
 |   |   |-- commands.rs         # Tauri 命令边界
 |   |   `-- models.rs           # 前后端数据模型
+|   |-- tauri.smoke.conf.json   # 隔离配置与 WebView 数据的 Smoke 构建覆盖
 |   `-- tauri.conf.json
 |-- package.json
 `-- vite.config.ts
@@ -166,6 +173,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 - 删除操作默认移动到管理器回收区；
 - 上游链接限制为受信任域名和 HTTPS；
 - API Key 由 Windows Credential Manager、macOS Keychain 或 Linux Secret Service 保存，前端无法读取原文；
+- AI 翻译 API Key 同样进入系统凭据库；远程 Base URL 必须使用 HTTPS，本机回环地址可使用 HTTP；
 - API Key、Token、游戏路径和日志不会提交到仓库；
 - `.env` 与本地密钥文件已加入 Git 忽略规则。
 
@@ -182,6 +190,12 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 - [产品需求文档](docs/PRD.md)
 - [技术架构](docs/ARCHITECTURE.md)
 - [星露谷物语 Wiki：Mod 使用指南](https://zh.stardewvalleywiki.com/%E6%A8%A1%E7%BB%84:%E4%BD%BF%E7%94%A8%E6%8C%87%E5%8D%97/%E5%85%A5%E9%97%A8)
+
+## 作者
+
+- SummerXDsss
+- 3104391686@qq.com
+- [GitHub](https://github.com/SummerXDsss)
 
 ## 许可证
 

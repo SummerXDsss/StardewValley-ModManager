@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Valley Steward Smoke",
+  "identifier": "com.summerxdsss.valleysteward.smoke",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Valley Steward Smoke",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 760,
+        "minHeight": 620,
+        "resizable": true,
+        "fullscreen": false,
+        "additionalBrowserArgs": "--remote-debugging-port=9334 --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
+        "dataDirectory": "smoke-webview"
+      }
+    ]
+  },
+  "bundle": {
+    "active": false
+  }
+}

@@ -1,9 +1,15 @@
 import { useEffect, useState } from "react";
 import { Alert, App, Avatar, Button, Drawer, Empty, Input, Segmented, Space, Table, Tag } from "antd";
 import type { TableProps } from "antd";
-import { CloudDownloadOutlined, ExportOutlined, InfoCircleOutlined, SearchOutlined } from "@ant-design/icons";
+import {
+  CloudDownloadOutlined,
+  ExportOutlined,
+  InfoCircleOutlined,
+  SearchOutlined,
+  TranslationOutlined,
+} from "@ant-design/icons";
 import { PageTitle } from "../shared";
-import { discoverMods, downloadNexusFile, getNexusModDetails, openRemoteUrl } from "../../api";
+import { discoverMods, downloadNexusFile, getNexusModDetails, openRemoteUrl, translateMod } from "../../api";
 import type { NexusFileVersion, NexusModDetails, RemoteMod } from "../../types";
 
 export function DownloadsPage() {
@@ -18,6 +24,7 @@ export function DownloadsPage() {
   const [detailsError, setDetailsError] = useState<string>();
   const [details, setDetails] = useState<NexusModDetails>();
   const [downloadingFile, setDownloadingFile] = useState<string>();
+  const [translatingMod, setTranslatingMod] = useState<string>();
 
   const mods = remoteMods.filter((mod) => {
     const matchesSource = source === "全部" || mod.source === source;
@@ -75,6 +82,22 @@ export function DownloadsPage() {
     }
   };
 
+  const translateRemoteMod = async (mod: RemoteMod) => {
+    if (translatingMod) return;
+    setTranslatingMod(mod.id);
+    try {
+      const translated = await translateMod(mod.name, mod.summary);
+      setRemoteMods((current) => current.map((item) => (
+        item.id === mod.id ? { ...item, name: translated.name, summary: translated.summary } : item
+      )));
+      message.success("名称与简介已翻译");
+    } catch (error) {
+      message.error(String(error));
+    } finally {
+      setTranslatingMod(undefined);
+    }
+  };
+
   const sourceOptions = ["全部", ...Array.from(new Set(remoteMods.map((mod) => mod.source)))];
 
   const columns: TableProps<RemoteMod>["columns"] = [
@@ -88,7 +111,19 @@ export function DownloadsPage() {
           </Avatar>
           <div className="remote-mod">
             <strong>{mod.name}</strong>
-            <span>{mod.summary}</span>
+            <div className="remote-mod-summary">
+              <span>{mod.summary}</span>
+              <Button
+                type="text"
+                size="small"
+                icon={<TranslationOutlined />}
+                loading={translatingMod === mod.id}
+                disabled={Boolean(translatingMod && translatingMod !== mod.id)}
+                onClick={() => void translateRemoteMod(mod)}
+              >
+                一键翻译
+              </Button>
+            </div>
             <small>{mod.author}</small>
           </div>
         </div>

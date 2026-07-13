@@ -6,6 +6,7 @@ mod services;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(services::game_process::GameProcessManager::new())
         .invoke_handler(tauri::generate_handler![
             commands::get_dashboard,
@@ -14,6 +15,12 @@ pub fn run() {
             commands::remove_mod,
             commands::open_mod_folder,
             commands::open_smapi_download,
+            commands::get_latest_smapi_release,
+            commands::download_latest_smapi_installer,
+            commands::get_ai_translation_settings,
+            commands::save_ai_translation_settings,
+            commands::clear_ai_translation_settings,
+            commands::translate_mod,
             commands::discover_mods,
             commands::open_remote_url,
             commands::get_nexus_auth_status,

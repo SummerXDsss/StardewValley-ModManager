@@ -1,5 +1,7 @@
 pub mod github;
 pub mod nexus;
+pub mod smapi;
+pub mod translation;
 
 use std::process::Command;
 

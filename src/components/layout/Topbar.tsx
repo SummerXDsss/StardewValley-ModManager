@@ -1,7 +1,8 @@
-import { Button, Checkbox, Dropdown, Space, Tooltip } from "antd";
+import { Button, Checkbox, Dropdown, Popover, Space, Tooltip } from "antd";
 import type { MenuProps } from "antd";
 import {
   DownOutlined,
+  EditOutlined,
   FolderOpenOutlined,
   PlayCircleFilled,
   PoweroffOutlined,
@@ -10,6 +11,7 @@ import {
 } from "@ant-design/icons";
 import type { LaunchPreference } from "../../hooks";
 import type { GameProcessStatus } from "../../types";
+import { formatDisplayPath } from "../../utils/path";
 
 export type GameProcessAction = "launching" | "stopping" | "restarting" | null;
 
@@ -23,6 +25,7 @@ interface TopbarProps {
   processAction: GameProcessAction;
   monitoring: boolean;
   monitorError?: string;
+  onEditGamePath: () => void;
   onStop: () => void;
   onRestart: () => void;
 }
@@ -37,6 +40,7 @@ export function Topbar({
   processAction,
   monitoring,
   monitorError,
+  onEditGamePath,
   onStop,
   onRestart,
 }: TopbarProps) {
@@ -87,13 +91,32 @@ export function Topbar({
   const statusDetail = running
     ? `${targetLabel}${processStatus.pid ? ` · PID ${processStatus.pid}` : ""}`
     : undefined;
+  const pathPopover = gamePath ? (
+    <div className="path-popover">
+      <span>{formatDisplayPath(gamePath)}</span>
+      <Button type="link" icon={<EditOutlined />} onClick={onEditGamePath}>
+        修改路径
+      </Button>
+    </div>
+  ) : (
+    <Button type="primary" icon={<FolderOpenOutlined />} onClick={onEditGamePath}>
+      设置游戏路径
+    </Button>
+  );
 
   return (
     <header className="topbar">
-      <div className="path-chip">
-        <FolderOpenOutlined />
-        <span>{gamePath ?? "尚未设置游戏目录"}</span>
-      </div>
+      <Popover title="游戏目录" content={pathPopover} trigger="click" placement="bottomLeft">
+        <button
+          className={`path-chip ${gamePath ? "ready" : "missing"}`}
+          type="button"
+          aria-label={gamePath ? "游戏路径已获取，点击查看或修改" : "需要设置游戏路径"}
+        >
+          <FolderOpenOutlined />
+          <span className="path-chip-label">{gamePath ? "游戏路径已获取" : "需要设置游戏路径"}</span>
+          <DownOutlined className="path-chip-arrow" />
+        </button>
+      </Popover>
       <div className="game-process-controls">
         <Tooltip title={monitorError ? `最近一次状态检查失败：${monitorError}` : statusDetail}>
           <div className={`game-process-status ${statusTone}`} role="status" aria-live="polite">

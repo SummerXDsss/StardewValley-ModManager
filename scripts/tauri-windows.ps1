@@ -1,7 +1,8 @@
-param(
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]] $TauriArgs
-)
+if (-not $env:VALLEY_STEWARD_TAURI_ARGS) {
+    throw "Tauri arguments were not provided by scripts/tauri.mjs."
+}
+
+$TauriArgs = @(ConvertFrom-Json -InputObject $env:VALLEY_STEWARD_TAURI_ARGS)
 
 $vsDevCmd = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat"
 if (-not (Test-Path -LiteralPath $vsDevCmd)) {
@@ -20,4 +21,3 @@ $env:PATH = "$cargoBin;$env:PATH"
 
 & npm.cmd run tauri:raw -- @TauriArgs
 exit $LASTEXITCODE
-
