@@ -171,6 +171,31 @@ export interface SaveAiTranslationSettingsRequest {
   apiKey?: string;
 }
 
+export interface ListAiTranslationModelsRequest {
+  baseUrl: string;
+  apiKey?: string;
+}
+
+export interface AiTranslationModel {
+  id: string;
+  ownedBy?: string | null;
+}
+
+export interface AiTranslationModelList {
+  models: AiTranslationModel[];
+}
+
+export interface TestAiTranslationConnectionRequest {
+  baseUrl: string;
+  modelId: string;
+  apiKey?: string;
+}
+
+export interface AiTranslationConnectionTestResult {
+  modelId: string;
+  message: string;
+}
+
 export interface TranslateModResult {
   name: string;
   summary: string;

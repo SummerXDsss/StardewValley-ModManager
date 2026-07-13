@@ -24,6 +24,8 @@ pub fn run() {
             commands::get_ai_translation_settings,
             commands::save_ai_translation_settings,
             commands::clear_ai_translation_settings,
+            commands::list_ai_translation_models,
+            commands::test_ai_translation_connection,
             commands::translate_mod,
             commands::discover_mods,
             commands::open_remote_url,

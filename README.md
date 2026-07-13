@@ -42,7 +42,7 @@ Valley Steward 是一个面向《星露谷物语》PC 玩家的轻量 Mod 管理
 - GitHub Search 与 Releases 官方 API；
 - 聚合搜索、来源筛选、缩略图、版本和热度；
 - GitHub Release 存在 `.zip` 或 `.7z` 发布包时提供直接下载入口；
-- 支持用户配置 OpenAI-compatible Base URL、Model ID 和 API Key，一键翻译 Mod 名称与简介；
+- 支持用户配置 HTTP/HTTPS OpenAI-compatible Base URL、Model ID 和 API Key；可读取 `/models` 列表、发送最小测试请求，并一键翻译 Mod 名称与简介；
 - 仅允许打开受信任上游域名的 HTTPS 链接；
 - Rust provider 缓存上游结果 15 分钟，降低限流风险。
 
@@ -176,7 +176,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 - 删除操作默认移动到管理器回收区；
 - 上游链接限制为受信任域名和 HTTPS；
 - API Key 由 Windows Credential Manager、macOS Keychain 或 Linux Secret Service 保存，前端无法读取原文；
-- AI 翻译 API Key 同样进入系统凭据库；远程 Base URL 必须使用 HTTPS，本机回环地址可使用 HTTP；
+- AI 翻译 API Key 同样进入系统凭据库；Base URL 支持 HTTP 与 HTTPS，HTTP 会在设置页提示 API Key 和请求内容以明文传输；模型读取、测试和翻译均禁止重定向并限制响应大小；
 - SMAPI 安装只执行校验后的官方 Release，拒绝路径穿越、符号链接、特殊文件和超限压缩内容；Windows 安装器使用隐藏的新控制台并设有总超时；
 - SMAPI 卸载同样只调用已校验的官方安装器；修改前按规范化可执行文件路径检测受管与外部游戏进程，检测到运行即拒绝执行，完成后以重新检测结果为准；用户 `Mods` 不主动删除，但操作前仍建议备份；
 - GitHub 镜像只接受无凭据、端口、查询参数和片段的 HTTPS 前缀；官方 Release 元数据与摘要不经过镜像，缺少官方 SHA-256 摘要时拒绝镜像下载并提示切回直连；

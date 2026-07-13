@@ -2,20 +2,24 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { demoDashboard } from "./mock";
 import type {
-  Dashboard,
+  AiTranslationConnectionTestResult,
+  AiTranslationModelList,
   AiTranslationStatus,
+  Dashboard,
   DownloadedModFile,
   DownloadedSmapiInstaller,
   GameProcessStatus,
   GithubDownloadSettings,
   InstalledSmapiResult,
   LaunchRequest,
+  ListAiTranslationModelsRequest,
   NexusAuthStatus,
   NexusModDetails,
   RemoteMod,
   SaveAiTranslationSettingsRequest,
   SmapiPlatform,
   SmapiReleaseInfo,
+  TestAiTranslationConnectionRequest,
   TranslateModResult,
   UninstalledSmapiResult,
 } from "./types";
@@ -217,6 +221,20 @@ export async function saveAiTranslationSettings(
 export async function clearAiTranslationSettings(): Promise<AiTranslationStatus> {
   if (!isTauri()) return { configured: false, apiKeyConfigured: false };
   return invoke<AiTranslationStatus>("clear_ai_translation_settings");
+}
+
+export async function listAiTranslationModels(
+  request: ListAiTranslationModelsRequest,
+): Promise<AiTranslationModelList> {
+  if (!isTauri()) throw new Error("获取 AI 模型列表需要在 Tauri 桌面应用中使用");
+  return invoke<AiTranslationModelList>("list_ai_translation_models", { request });
+}
+
+export async function testAiTranslationConnection(
+  request: TestAiTranslationConnectionRequest,
+): Promise<AiTranslationConnectionTestResult> {
+  if (!isTauri()) throw new Error("AI 连接测试需要在 Tauri 桌面应用中使用");
+  return invoke<AiTranslationConnectionTestResult>("test_ai_translation_connection", { request });
 }
 
 export async function translateMod(name: string, summary: string): Promise<TranslateModResult> {

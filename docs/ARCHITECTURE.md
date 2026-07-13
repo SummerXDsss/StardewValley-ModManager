@@ -59,6 +59,12 @@
 - `get_nexus_auth_status` / `set_nexus_api_key` / `clear_nexus_api_key`：管理系统凭据库中的 Nexus Key，不向前端返回原文；
 - `get_nexus_mod_details`：读取 Mod、文件组和全部版本；
 - `download_nexus_file`：通过官方下载链接接口流式写入应用缓存。
+- `get_ai_translation_settings` / `save_ai_translation_settings` / `clear_ai_translation_settings`：管理 OpenAI-compatible Base URL、Model ID 与系统凭据库中的 API Key。
+- `list_ai_translation_models`：按当前表单 Base URL 与凭据读取受限大小的 `/models` 响应，去重后返回可选 Model ID；不保存配置。
+- `test_ai_translation_connection`：按当前表单配置发送最小 Chat Completions 请求并返回短响应；不保存配置。
+- `translate_mod`：使用已保存配置按《星露谷物语》语境翻译名称与简介，并严格解析 `name`/`summary` JSON。
+
+AI provider 允许用户显式配置 HTTP 或 HTTPS；HTTP 的明文风险由前端持续提示。所有 AI 请求禁用重定向、限制连接/总超时与响应大小，错误文本会清理控制字符并遮盖 API Key。表单未填写新 Key 时，只有 Base URL 与已保存配置同源才可复用系统凭据。
 
 
 ## 后续接口

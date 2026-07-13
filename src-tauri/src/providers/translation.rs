@@ -1,7 +1,7 @@
 use std::{
+    collections::HashSet,
     fs,
     io::ErrorKind,
-    net::IpAddr,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
@@ -23,6 +23,9 @@ const MAX_API_KEY_BYTES: usize = 2_048;
 const MAX_NAME_CHARS: usize = 512;
 const MAX_SUMMARY_CHARS: usize = 12_000;
 const MAX_TRANSLATED_SUMMARY_CHARS: usize = 16_000;
+const MAX_MODEL_OWNER_CHARS: usize = 256;
+const MAX_MODEL_COUNT: usize = 5_000;
+const MAX_TEST_MESSAGE_CHARS: usize = 2_000;
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_PROVIDER_ERROR_CHARS: usize = 400;
@@ -49,6 +52,43 @@ pub struct SaveAiTranslationSettingsRequest {
     pub model_id: String,
     #[serde(default)]
     pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListAiTranslationModelsRequest {
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiTranslationModel {
+    pub id: String,
+    pub owned_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiTranslationModelList {
+    pub models: Vec<AiTranslationModel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TestAiTranslationConnectionRequest {
+    pub base_url: String,
+    pub model_id: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiTranslationConnectionTestResult {
+    pub model_id: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -85,6 +125,13 @@ struct ChatMessage<'a> {
     content: &'a str,
 }
 
+#[derive(Serialize)]
+struct ChatConnectionTestRequest<'a> {
+    model: &'a str,
+    messages: [ChatMessage<'a>; 1],
+    max_tokens: u8,
+}
+
 #[derive(Deserialize)]
 struct ChatCompletionResponse {
     choices: Vec<ChatChoice>,
@@ -112,6 +159,18 @@ struct ChatTextPart {
     #[serde(rename = "type")]
     kind: Option<String>,
     text: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ModelListResponse {
+    data: Vec<ModelListItem>,
+}
+
+#[derive(Deserialize)]
+struct ModelListItem {
+    id: String,
+    #[serde(default)]
+    owned_by: Option<String>,
 }
 
 pub fn get_status(config_dir: &Path) -> Result<AiTranslationStatus, String> {
@@ -225,6 +284,99 @@ pub async fn translate_mod(
     send_translation(&config, &api_key, &request).await
 }
 
+pub async fn list_models(
+    config_dir: &Path,
+    request: ListAiTranslationModelsRequest,
+) -> Result<AiTranslationModelList, String> {
+    let base_url = normalize_base_url(&request.base_url)?;
+    let api_key = resolve_request_api_key(config_dir, &base_url, request.api_key.as_deref())?;
+    let endpoint = models_endpoint(&base_url)?;
+    let response = provider_client()?
+        .get(endpoint)
+        .header(ACCEPT, "application/json")
+        .bearer_auth(&api_key)
+        .send()
+        .await
+        .map_err(|error| format!("获取 AI 模型列表失败：{error}"))?;
+    let body = read_provider_response(response, &api_key).await?;
+    let response: ModelListResponse =
+        serde_json::from_slice(&body).map_err(|_| "AI 模型列表响应格式无效".to_string())?;
+    if response.data.len() > MAX_MODEL_COUNT {
+        return Err(format!("AI 服务返回的模型数量超过 {MAX_MODEL_COUNT} 个"));
+    }
+
+    let mut seen = HashSet::with_capacity(response.data.len());
+    let mut models = Vec::with_capacity(response.data.len());
+    for item in response.data {
+        let id = normalize_model_id(&item.id)
+            .map_err(|error| format!("AI 服务返回了无效 Model ID：{error}"))?;
+        if id == api_key || (api_key.len() >= 8 && id.contains(&api_key)) {
+            return Err("AI 服务返回了不安全的 Model ID".into());
+        }
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let owned_by = normalize_optional_provider_text(
+            item.owned_by.as_deref(),
+            "模型所有者",
+            MAX_MODEL_OWNER_CHARS,
+        )?
+        .map(|value| {
+            if value == api_key || api_key.len() >= 8 {
+                value.replace(&api_key, "[已隐藏]")
+            } else {
+                value
+            }
+        });
+        models.push(AiTranslationModel { id, owned_by });
+    }
+    models.sort_unstable_by(|left, right| left.id.cmp(&right.id));
+
+    Ok(AiTranslationModelList { models })
+}
+
+pub async fn test_connection(
+    config_dir: &Path,
+    request: TestAiTranslationConnectionRequest,
+) -> Result<AiTranslationConnectionTestResult, String> {
+    let base_url = normalize_base_url(&request.base_url)?;
+    let model_id = normalize_model_id(&request.model_id)?;
+    let api_key = resolve_request_api_key(config_dir, &base_url, request.api_key.as_deref())?;
+    let endpoint = completion_endpoint(&base_url)?;
+    let payload = ChatConnectionTestRequest {
+        model: &model_id,
+        messages: [ChatMessage {
+            role: "user",
+            content: "请只回复：连接成功",
+        }],
+        max_tokens: 16,
+    };
+    let response = provider_client()?
+        .post(endpoint)
+        .header(ACCEPT, "application/json")
+        .bearer_auth(&api_key)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| format!("AI 连接测试失败：{error}"))?;
+    let body = read_provider_response(response, &api_key).await?;
+    let response: ChatCompletionResponse =
+        serde_json::from_slice(&body).map_err(|_| "AI 连接测试响应格式无效".to_string())?;
+    let content = response
+        .choices
+        .into_iter()
+        .next()
+        .ok_or_else(|| "AI 连接测试没有返回消息".to_string())?
+        .message
+        .content
+        .ok_or_else(|| "AI 连接测试返回了空消息".to_string())?;
+    let message = chat_content_as_text(content)?;
+    let message = message.replace(&api_key, "[已隐藏]");
+    let message = normalize_text(&message, "AI 连接测试消息", MAX_TEST_MESSAGE_CHARS)?;
+
+    Ok(AiTranslationConnectionTestResult { model_id, message })
+}
+
 async fn send_translation(
     config: &StoredTranslationConfig,
     api_key: &str,
@@ -246,14 +398,7 @@ async fn send_translation(
             },
         ],
     };
-    let client = Client::builder()
-        .user_agent("Valley-Steward/0.1")
-        .redirect(Policy::none())
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .map_err(|error| format!("无法初始化 AI 翻译客户端：{error}"))?;
-    let response = client
+    let response = provider_client()?
         .post(endpoint)
         .header(ACCEPT, "application/json")
         .bearer_auth(api_key)
@@ -261,22 +406,9 @@ async fn send_translation(
         .send()
         .await
         .map_err(|error| format!("AI 翻译请求失败：{error}"))?;
-    let status = response.status();
-
-    if !status.is_success() {
-        let body = read_limited_body(response, MAX_ERROR_RESPONSE_BYTES)
-            .await
-            .map_err(|error| format!("AI 服务返回 HTTP {status}，且错误响应无效：{error}"))?;
-        let detail = provider_error_message(&body, api_key);
-        return Err(match detail {
-            Some(detail) => format!("AI 服务返回 HTTP {status}：{detail}"),
-            None => format!("AI 服务返回 HTTP {status}"),
-        });
-    }
-
-    let body = read_limited_body(response, MAX_RESPONSE_BYTES).await?;
+    let body = read_provider_response(response, api_key).await?;
     let response: ChatCompletionResponse =
-        serde_json::from_slice(&body).map_err(|error| format!("无法解析 AI 服务响应：{error}"))?;
+        serde_json::from_slice(&body).map_err(|_| "AI 服务响应格式无效".to_string())?;
     let content = response
         .choices
         .into_iter()
@@ -305,30 +437,16 @@ fn normalize_base_url(value: &str) -> Result<String, String> {
     if url.query().is_some() || url.fragment().is_some() {
         return Err("Base URL 不能包含查询参数或片段".into());
     }
-    let host = url
-        .host_str()
+    url.host_str()
         .ok_or_else(|| "Base URL 必须包含主机名".to_string())?;
-    let ip_host = host
-        .strip_prefix('[')
-        .and_then(|value| value.strip_suffix(']'))
-        .unwrap_or(host);
-    let loopback = host.eq_ignore_ascii_case("localhost")
-        || ip_host
-            .parse::<IpAddr>()
-            .is_ok_and(|address| address.is_loopback());
     match url.scheme() {
-        "https" => {}
-        "http" if loopback => {}
-        "http" => return Err("远程 Base URL 必须使用 HTTPS；HTTP 仅允许本机回环地址".into()),
-        _ => return Err("Base URL 仅支持 HTTPS，或本机回环地址上的 HTTP".into()),
+        "http" | "https" => {}
+        _ => return Err("Base URL 仅支持 HTTP 或 HTTPS".into()),
     }
 
-    if url
-        .path()
-        .trim_end_matches('/')
-        .ends_with("/chat/completions")
-    {
-        return Err("Base URL 应填写 API 根地址，不要包含 /chat/completions".into());
+    let endpoint_path = url.path().trim_end_matches('/');
+    if endpoint_path.ends_with("/chat/completions") || endpoint_path.ends_with("/models") {
+        return Err("Base URL 应填写 API 根地址，不要包含 /chat/completions 或 /models".into());
     }
 
     let path = url.path().trim_end_matches('/');
@@ -342,10 +460,18 @@ fn normalize_base_url(value: &str) -> Result<String, String> {
 }
 
 fn completion_endpoint(base_url: &str) -> Result<Url, String> {
+    provider_endpoint(base_url, "chat/completions")
+}
+
+fn models_endpoint(base_url: &str) -> Result<Url, String> {
+    provider_endpoint(base_url, "models")
+}
+
+fn provider_endpoint(base_url: &str, relative_path: &str) -> Result<Url, String> {
     let normalized = normalize_base_url(base_url)?;
     Url::parse(&normalized)
-        .and_then(|url| url.join("chat/completions"))
-        .map_err(|_| "无法构造 AI 翻译接口地址".to_string())
+        .and_then(|url| url.join(relative_path))
+        .map_err(|_| "无法构造 AI 服务接口地址".to_string())
 }
 
 fn same_base_url_origin(left: &str, right: &str) -> Result<bool, String> {
@@ -354,6 +480,23 @@ fn same_base_url_origin(left: &str, right: &str) -> Result<bool, String> {
     let right = Url::parse(&normalize_base_url(right)?)
         .map_err(|_| "无法读取新 AI 翻译 Base URL".to_string())?;
     Ok(left.origin() == right.origin())
+}
+
+fn resolve_request_api_key(
+    config_dir: &Path,
+    base_url: &str,
+    provided_api_key: Option<&str>,
+) -> Result<String, String> {
+    if let Some(api_key) = provided_api_key.filter(|value| !value.trim().is_empty()) {
+        return normalize_api_key(api_key);
+    }
+
+    let saved_config = read_config(config_dir)?
+        .ok_or_else(|| "请填写 AI 翻译 API Key，或先保存同一服务的配置".to_string())?;
+    if !same_base_url_origin(&saved_config.base_url, base_url)? {
+        return Err("Base URL 与已保存服务来源不同，请重新填写对应的 AI 翻译 API Key".into());
+    }
+    read_api_key()?.ok_or_else(|| "请填写 AI 翻译 API Key".to_string())
 }
 
 fn normalize_model_id(value: &str) -> Result<String, String> {
@@ -419,6 +562,17 @@ fn normalize_text(value: &str, label: &str, max_chars: usize) -> Result<String, 
     Ok(value.to_string())
 }
 
+fn normalize_optional_provider_text(
+    value: Option<&str>,
+    label: &str,
+    max_chars: usize,
+) -> Result<Option<String>, String> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    normalize_text(value, label, max_chars).map(Some)
+}
+
 fn parse_translation_content(content: &str) -> Result<TranslateModResult, String> {
     let content = content.trim();
     let json = if let Some(fenced) = content.strip_prefix("```") {
@@ -462,6 +616,32 @@ fn chat_content_as_text(content: ChatMessageContent) -> Result<String, String> {
             }
         }
     }
+}
+
+fn provider_client() -> Result<Client, String> {
+    Client::builder()
+        .user_agent("Valley-Steward/0.1")
+        .redirect(Policy::none())
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|error| format!("无法初始化 AI 服务客户端：{error}"))
+}
+
+async fn read_provider_response(response: Response, api_key: &str) -> Result<Vec<u8>, String> {
+    let status = response.status();
+    if status.is_success() {
+        return read_limited_body(response, MAX_RESPONSE_BYTES).await;
+    }
+
+    let body = read_limited_body(response, MAX_ERROR_RESPONSE_BYTES)
+        .await
+        .map_err(|error| format!("AI 服务返回 HTTP {status}，且错误响应无效：{error}"))?;
+    let detail = provider_error_message(&body, api_key);
+    Err(match detail {
+        Some(detail) => format!("AI 服务返回 HTTP {status}：{detail}"),
+        None => format!("AI 服务返回 HTTP {status}"),
+    })
 }
 
 async fn read_limited_body(mut response: Response, limit: usize) -> Result<Vec<u8>, String> {
@@ -655,18 +835,27 @@ mod tests {
         );
         assert!(normalize_base_url("http://[::1]:8080/v1").is_ok());
         assert!(normalize_base_url("http://localhost:1234/v1").is_ok());
+        assert_eq!(
+            normalize_base_url("http://82.40.42.147:8088/v1").unwrap(),
+            "http://82.40.42.147:8088/v1/"
+        );
+        assert_eq!(
+            models_endpoint("http://82.40.42.147:8088/v1")
+                .unwrap()
+                .as_str(),
+            "http://82.40.42.147:8088/v1/models"
+        );
     }
 
     #[test]
     fn rejects_unsafe_or_ambiguous_base_urls() {
         for value in [
-            "http://api.example/v1",
-            "http://localhost.evil.example/v1",
             "ftp://localhost/v1",
             "https://user:secret@api.example/v1",
             "https://api.example/v1?token=secret",
             "https://api.example/v1#fragment",
             "https://api.example/v1/chat/completions",
+            "https://api.example/v1/models",
         ] {
             assert!(normalize_base_url(value).is_err(), "accepted {value}");
         }
@@ -798,6 +987,124 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fetches_sorts_and_deduplicates_openai_compatible_models() {
+        let response = json!({
+            "object": "list",
+            "data": [
+                {"id": "zeta-model", "owned_by": "provider"},
+                {"id": "alpha-model", "owned_by": "provider"},
+                {"id": "zeta-model", "owned_by": "duplicate"}
+            ]
+        })
+        .to_string();
+        let (base_url, received, server) = spawn_http_server("200 OK", "", response);
+        let result = list_models(
+            &unique_temp_directory(),
+            ListAiTranslationModelsRequest {
+                base_url,
+                api_key: Some("test-key-123".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            result.models,
+            vec![
+                AiTranslationModel {
+                    id: "alpha-model".into(),
+                    owned_by: Some("provider".into()),
+                },
+                AiTranslationModel {
+                    id: "zeta-model".into(),
+                    owned_by: Some("provider".into()),
+                },
+            ]
+        );
+        let raw_request = received.recv_timeout(Duration::from_secs(2)).unwrap();
+        server.join().unwrap();
+        let headers = raw_request.split_once("\r\n\r\n").unwrap().0;
+        assert!(headers.starts_with("GET /v1/models HTTP/1.1"));
+        assert!(headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer test-key-123"));
+    }
+
+    #[tokio::test]
+    async fn model_listing_does_not_expose_keys_from_malformed_success_responses() {
+        let response = json!({ "data": "test-key-123" }).to_string();
+        let (base_url, _received, server) = spawn_http_server("200 OK", "", response);
+        let error = list_models(
+            &unique_temp_directory(),
+            ListAiTranslationModelsRequest {
+                base_url,
+                api_key: Some("test-key-123".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+        server.join().unwrap();
+
+        assert_eq!(error, "AI 模型列表响应格式无效");
+        assert!(!error.contains("test-key-123"));
+    }
+
+    #[tokio::test]
+    async fn model_listing_rejects_a_model_id_that_contains_the_api_key() {
+        let response = json!({
+            "data": [{"id": "model-test-key-123", "owned_by": "provider"}]
+        })
+        .to_string();
+        let (base_url, _received, server) = spawn_http_server("200 OK", "", response);
+        let error = list_models(
+            &unique_temp_directory(),
+            ListAiTranslationModelsRequest {
+                base_url,
+                api_key: Some("test-key-123".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+        server.join().unwrap();
+
+        assert_eq!(error, "AI 服务返回了不安全的 Model ID");
+        assert!(!error.contains("test-key-123"));
+    }
+
+    #[tokio::test]
+    async fn sends_minimal_model_connection_test() {
+        let response = json!({
+            "choices": [{"message": {"content": "连接成功 test-key-123"}}]
+        })
+        .to_string();
+        let (base_url, received, server) = spawn_http_server("200 OK", "", response);
+        let result = test_connection(
+            &unique_temp_directory(),
+            TestAiTranslationConnectionRequest {
+                base_url,
+                model_id: "test-model".into(),
+                api_key: Some("test-key-123".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.model_id, "test-model");
+        assert_eq!(result.message, "连接成功 [已隐藏]");
+        let raw_request = received.recv_timeout(Duration::from_secs(2)).unwrap();
+        server.join().unwrap();
+        let (headers, body) = raw_request.split_once("\r\n\r\n").unwrap();
+        assert!(headers.starts_with("POST /v1/chat/completions HTTP/1.1"));
+        assert!(headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer test-key-123"));
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["model"], "test-model");
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(body["max_tokens"], 16);
+    }
+
+    #[tokio::test]
     async fn does_not_follow_provider_redirects() {
         let (base_url, _received, server) = spawn_http_server(
             "302 Found",
@@ -818,6 +1125,35 @@ mod tests {
             .unwrap_err();
         server.join().unwrap();
         assert!(error.contains("302"));
+    }
+
+    #[tokio::test]
+    async fn model_listing_does_not_follow_provider_redirects() {
+        let (base_url, _received, server) = spawn_http_server(
+            "307 Temporary Redirect",
+            "Location: http://127.0.0.1:9/credential-target\r\n",
+            "{\"error\":{\"message\":\"redirect blocked\"}}".into(),
+        );
+        let error = list_models(
+            &unique_temp_directory(),
+            ListAiTranslationModelsRequest {
+                base_url,
+                api_key: Some("test-key-123".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+        server.join().unwrap();
+        assert!(error.contains("307"));
+    }
+
+    #[test]
+    fn provider_errors_redact_api_keys() {
+        let body = br#"{"error":{"message":"invalid test-key-123 credential"}}"#;
+        assert_eq!(
+            provider_error_message(body, "test-key-123").as_deref(),
+            Some("invalid [已隐藏] credential")
+        );
     }
 
     fn unique_temp_directory() -> PathBuf {

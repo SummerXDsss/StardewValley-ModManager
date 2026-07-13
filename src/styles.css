@@ -841,6 +841,51 @@ button, input {
   font-weight: 600;
 }
 
+.ai-translation-model-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.ai-translation-model-control > .ant-select {
+  min-width: 0;
+}
+
+.ai-model-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+}
+
+.ai-model-option > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-model-option > small,
+.ai-translation-hint {
+  color: var(--color-dark-muted);
+  font-size: 12px;
+}
+
+.ai-model-option > small {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-translation-actions {
+  row-gap: 8px;
+}
+
+.ai-translation-setting .ant-alert-description {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .nexus-setting-status,
 .nexus-detail-summary,
 .nexus-file > header {
@@ -1095,6 +1140,10 @@ button, input {
 
   .game-process-status {
     min-width: 102px;
+  }
+
+  .ai-translation-model-control {
+    grid-template-columns: 1fr;
   }
 }
 

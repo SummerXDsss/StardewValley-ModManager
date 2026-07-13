@@ -354,6 +354,30 @@ pub async fn translate_mod(
 }
 
 #[tauri::command]
+pub async fn list_ai_translation_models(
+    app: tauri::AppHandle,
+    request: providers::translation::ListAiTranslationModelsRequest,
+) -> Result<providers::translation::AiTranslationModelList, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("无法确定应用配置目录：{error}"))?;
+    providers::translation::list_models(&config_dir, request).await
+}
+
+#[tauri::command]
+pub async fn test_ai_translation_connection(
+    app: tauri::AppHandle,
+    request: providers::translation::TestAiTranslationConnectionRequest,
+) -> Result<providers::translation::AiTranslationConnectionTestResult, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("无法确定应用配置目录：{error}"))?;
+    providers::translation::test_connection(&config_dir, request).await
+}
+
+#[tauri::command]
 pub async fn discover_mods() -> Result<Vec<RemoteMod>, String> {
     providers::discover().await
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, App, Button, Input, Select, Space, Switch, Tag } from "antd";
-import { FolderOpenOutlined, ReloadOutlined } from "@ant-design/icons";
+import { Alert, App, AutoComplete, Button, Input, Select, Space, Switch, Tag } from "antd";
+import { ApiOutlined, FolderOpenOutlined, ReloadOutlined } from "@ant-design/icons";
 import { PageTitle } from "../shared";
 import {
   chooseGameDirectory,
@@ -9,11 +9,15 @@ import {
   getAiTranslationSettings,
   getGithubDownloadSettings,
   getNexusAuthStatus,
+  listAiTranslationModels,
   saveAiTranslationSettings,
   saveGithubDownloadSettings,
   setNexusApiKey,
+  testAiTranslationConnection,
 } from "../../api";
 import type {
+  AiTranslationConnectionTestResult,
+  AiTranslationModel,
   AiTranslationStatus,
   Dashboard,
   GithubDownloadMode,
@@ -22,6 +26,23 @@ import type {
   LaunchTarget,
 } from "../../types";
 import { formatDisplayPath } from "../../utils/path";
+
+function hasSameOrigin(left: string | undefined, right: string) {
+  if (!left || !right.trim()) return false;
+  try {
+    return new URL(left).origin === new URL(right).origin;
+  } catch {
+    return false;
+  }
+}
+
+function usesPlainHttp(value: string) {
+  try {
+    return new URL(value).protocol === "http:";
+  } catch {
+    return false;
+  }
+}
 
 interface SettingsPageProps {
   dashboard: Dashboard;
@@ -54,8 +75,15 @@ export function SettingsPage({
   const [translationBaseUrl, setTranslationBaseUrl] = useState("");
   const [translationModelId, setTranslationModelId] = useState("");
   const [translationApiKey, setTranslationApiKey] = useState("");
+  const [translationStatusLoading, setTranslationStatusLoading] = useState(true);
   const [translationMutation, setTranslationMutation] = useState<"saving" | "clearing" | null>(null);
   const translationMutationRef = useRef(false);
+  const [translationModels, setTranslationModels] = useState<AiTranslationModel[]>([]);
+  const [translationModelsLoading, setTranslationModelsLoading] = useState(false);
+  const [translationTestLoading, setTranslationTestLoading] = useState(false);
+  const [translationTestResult, setTranslationTestResult] = useState<AiTranslationConnectionTestResult>();
+  const [translationRequestError, setTranslationRequestError] = useState<{ title: string; detail: string }>();
+  const translationNetworkRef = useRef(false);
   const [githubDownloadStatus, setGithubDownloadStatus] = useState<GithubDownloadSettings>({
     mode: "direct",
     customPrefix: null,
@@ -92,7 +120,8 @@ export function SettingsPage({
         setTranslationBaseUrl(status.baseUrl ?? "");
         setTranslationModelId(status.modelId ?? "");
       })
-      .catch((error) => message.error(String(error)));
+      .catch((error) => message.error(String(error)))
+      .finally(() => setTranslationStatusLoading(false));
     void loadGithubSettings();
   }, [loadGithubSettings]);
 
@@ -139,8 +168,60 @@ export function SettingsPage({
     message.success("Nexus API Key 已清除");
   };
 
+  const loadTranslationModels = async () => {
+    if (translationNetworkRef.current || translationMutationRef.current) return;
+    translationNetworkRef.current = true;
+    setTranslationModelsLoading(true);
+    setTranslationRequestError(undefined);
+    setTranslationTestResult(undefined);
+    try {
+      const result = await listAiTranslationModels({
+        baseUrl: translationBaseUrl,
+        apiKey: translationApiKey.trim() || undefined,
+      });
+      setTranslationModels(result.models);
+      if (result.models.length === 0) {
+        message.warning("接口未返回可用模型，仍可手动填写 Model ID");
+      } else {
+        message.success(`已获取 ${result.models.length} 个模型`);
+      }
+    } catch (error) {
+      const detail = String(error);
+      setTranslationRequestError({ title: "模型列表获取失败", detail });
+      message.error(detail);
+    } finally {
+      translationNetworkRef.current = false;
+      setTranslationModelsLoading(false);
+    }
+  };
+
+  const sendTranslationTest = async () => {
+    if (translationNetworkRef.current || translationMutationRef.current) return;
+    translationNetworkRef.current = true;
+    setTranslationTestLoading(true);
+    setTranslationRequestError(undefined);
+    setTranslationTestResult(undefined);
+    try {
+      const result = await testAiTranslationConnection({
+        baseUrl: translationBaseUrl,
+        modelId: translationModelId,
+        apiKey: translationApiKey.trim() || undefined,
+      });
+      setTranslationModelId(result.modelId);
+      setTranslationTestResult(result);
+      message.success("AI 接口测试成功");
+    } catch (error) {
+      const detail = String(error);
+      setTranslationRequestError({ title: "AI 接口测试失败", detail });
+      message.error(detail);
+    } finally {
+      translationNetworkRef.current = false;
+      setTranslationTestLoading(false);
+    }
+  };
+
   const saveTranslationSettings = async () => {
-    if (translationMutationRef.current) return;
+    if (translationMutationRef.current || translationNetworkRef.current) return;
     translationMutationRef.current = true;
     setTranslationMutation("saving");
     try {
@@ -153,6 +234,7 @@ export function SettingsPage({
       setTranslationBaseUrl(status.baseUrl ?? translationBaseUrl);
       setTranslationModelId(status.modelId ?? translationModelId);
       setTranslationApiKey("");
+      setTranslationRequestError(undefined);
       message.success("AI 翻译配置已保存");
     } catch (error) {
       message.error(String(error));
@@ -163,7 +245,7 @@ export function SettingsPage({
   };
 
   const removeTranslationSettings = async () => {
-    if (translationMutationRef.current) return;
+    if (translationMutationRef.current || translationNetworkRef.current) return;
     translationMutationRef.current = true;
     setTranslationMutation("clearing");
     try {
@@ -172,6 +254,9 @@ export function SettingsPage({
       setTranslationBaseUrl("");
       setTranslationModelId("");
       setTranslationApiKey("");
+      setTranslationModels([]);
+      setTranslationRequestError(undefined);
+      setTranslationTestResult(undefined);
       message.success("AI 翻译配置已清除");
     } catch (error) {
       message.error(String(error));
@@ -233,6 +318,45 @@ export function SettingsPage({
     }
     onLaunchArgumentsChange(target, argumentsList);
   };
+
+  const updateTranslationBaseUrl = (value: string) => {
+    setTranslationBaseUrl(value);
+    setTranslationModels([]);
+    setTranslationRequestError(undefined);
+    setTranslationTestResult(undefined);
+  };
+
+  const updateTranslationApiKey = (value: string) => {
+    setTranslationApiKey(value);
+    setTranslationModels([]);
+    setTranslationRequestError(undefined);
+    setTranslationTestResult(undefined);
+  };
+
+  const updateTranslationModelId = (value: string) => {
+    setTranslationModelId(value);
+    setTranslationRequestError(undefined);
+    setTranslationTestResult(undefined);
+  };
+
+  const translationControlsBusy = translationStatusLoading
+    || translationMutation !== null
+    || translationModelsLoading
+    || translationTestLoading;
+  const translationCredentialAvailable = Boolean(translationApiKey.trim())
+    || (translationStatus.apiKeyConfigured
+      && hasSameOrigin(translationStatus.baseUrl, translationBaseUrl));
+  const translationProviderReady = Boolean(translationBaseUrl.trim())
+    && translationCredentialAvailable;
+  const translationModelOptions = translationModels.map((model) => ({
+    value: model.id,
+    label: (
+      <div className="ai-model-option">
+        <span>{model.id}</span>
+        {model.ownedBy && <small>{model.ownedBy}</small>}
+      </div>
+    ),
+  }));
 
   return (
     <section>
@@ -410,36 +534,94 @@ export function SettingsPage({
             <Input
               id="translation-base-url"
               value={translationBaseUrl}
-              onChange={(event) => setTranslationBaseUrl(event.target.value)}
-              placeholder="例如 https://api.openai.com/v1"
+              disabled={translationControlsBusy}
+              onChange={(event) => updateTranslationBaseUrl(event.target.value)}
+              placeholder="例如 https://api.openai.com/v1 或 http://127.0.0.1:11434/v1"
               autoComplete="url"
             />
           </div>
-          <div className="ai-translation-field">
-            <label htmlFor="translation-model-id">Model ID</label>
-            <Input
-              id="translation-model-id"
-              value={translationModelId}
-              onChange={(event) => setTranslationModelId(event.target.value)}
-              placeholder="例如 gpt-4.1-mini"
-              autoComplete="off"
+          {usesPlainHttp(translationBaseUrl) && (
+            <Alert
+              type="warning"
+              showIcon
+              message="HTTP 连接不会加密 API Key"
+              description="API Key、Mod 文本和模型回复会以明文在网络中传输。仅对完全信任的服务和网络使用 HTTP，公网服务建议改用 HTTPS。"
             />
-          </div>
+          )}
           <div className="ai-translation-field">
             <label htmlFor="translation-api-key">API Key</label>
             <Input.Password
               id="translation-api-key"
               value={translationApiKey}
-              onChange={(event) => setTranslationApiKey(event.target.value)}
-              placeholder={translationStatus.apiKeyConfigured ? "留空以保留当前 API Key" : "请输入 API Key"}
+              disabled={translationControlsBusy}
+              onChange={(event) => updateTranslationApiKey(event.target.value)}
+              placeholder={translationStatus.apiKeyConfigured && hasSameOrigin(translationStatus.baseUrl, translationBaseUrl)
+                ? "已安全保存；留空即可使用当前 API Key"
+                : "请输入 API Key"}
               autoComplete="new-password"
             />
           </div>
-          <Space>
+          <div className="ai-translation-field">
+            <label htmlFor="translation-model-id">Model ID</label>
+            <div className="ai-translation-model-control">
+              <AutoComplete
+                id="translation-model-id"
+                value={translationModelId}
+                options={translationModelOptions}
+                disabled={translationControlsBusy}
+                allowClear
+                placeholder="获取模型后选择，或手动输入 Model ID"
+                filterOption={(inputValue, option) => String(option?.value ?? "")
+                  .toLocaleLowerCase()
+                  .includes(inputValue.toLocaleLowerCase())}
+                onChange={updateTranslationModelId}
+              />
+              <Button
+                icon={<ReloadOutlined />}
+                loading={translationModelsLoading}
+                disabled={translationControlsBusy || !translationProviderReady}
+                onClick={() => void loadTranslationModels()}
+              >
+                获取模型
+              </Button>
+            </div>
+            {translationModels.length > 0 && (
+              <small className="ai-translation-hint">
+                已加载 {translationModels.length} 个模型，可搜索或继续手动输入。
+              </small>
+            )}
+          </div>
+          {translationRequestError && (
+            <Alert
+              type="error"
+              showIcon
+              closable
+              message={translationRequestError.title}
+              description={translationRequestError.detail}
+              onClose={() => setTranslationRequestError(undefined)}
+            />
+          )}
+          {translationTestResult && (
+            <Alert
+              type="success"
+              showIcon
+              message={`连接成功 · ${translationTestResult.modelId}`}
+              description={`服务响应：${translationTestResult.message}`}
+            />
+          )}
+          <Space wrap className="ai-translation-actions">
+            <Button
+              icon={<ApiOutlined />}
+              loading={translationTestLoading}
+              disabled={translationControlsBusy || !translationProviderReady || !translationModelId.trim()}
+              onClick={() => void sendTranslationTest()}
+            >
+              发送测试
+            </Button>
             <Button
               type="primary"
               loading={translationMutation === "saving"}
-              disabled={translationMutation !== null || !translationBaseUrl.trim() || !translationModelId.trim() || (!translationStatus.apiKeyConfigured && !translationApiKey.trim())}
+              disabled={translationControlsBusy || !translationProviderReady || !translationModelId.trim()}
               onClick={() => void saveTranslationSettings()}
             >
               保存配置
@@ -448,7 +630,7 @@ export function SettingsPage({
               <Button
                 danger
                 loading={translationMutation === "clearing"}
-                disabled={translationMutation !== null}
+                disabled={translationControlsBusy}
                 onClick={() => void removeTranslationSettings()}
               >
                 清除
