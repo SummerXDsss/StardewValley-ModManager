@@ -13,6 +13,7 @@ export function useDashboard() {
     try {
       const data = await getDashboard();
       setDashboard(data);
+      return data;
     } catch (error) {
       message.error(String(error));
     } finally {

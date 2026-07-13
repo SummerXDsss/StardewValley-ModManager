@@ -2,17 +2,19 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, App, Button, Input, Modal, Space, Steps, Tag } from "antd";
 import {
   CheckCircleOutlined,
+  ExportOutlined,
   FolderOpenOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
 } from "@ant-design/icons";
 import {
   chooseGameDirectory,
-  downloadLatestSmapiInstaller,
   getLatestSmapiRelease,
+  installLatestSmapi,
+  openSmapiDownload,
   scanGamePath,
 } from "../../api";
-import type { Dashboard, SmapiReleaseInfo } from "../../types";
+import type { Dashboard, InstalledSmapiResult, SmapiReleaseInfo } from "../../types";
 import { formatDisplayPath } from "../../utils/path";
 
 interface FirstRunSetupProps {
@@ -23,7 +25,7 @@ interface FirstRunSetupProps {
 }
 
 export function FirstRunSetup({ open, dashboard, onDashboardUpdate, onComplete }: FirstRunSetupProps) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const detectedPath = dashboard.installation ? formatDisplayPath(dashboard.installation.path) : "";
   const [step, setStep] = useState(0);
   const [pathInput, setPathInput] = useState(detectedPath);
@@ -32,7 +34,9 @@ export function FirstRunSetup({ open, dashboard, onDashboardUpdate, onComplete }
   const [smapiRelease, setSmapiRelease] = useState<SmapiReleaseInfo>();
   const [smapiReleaseError, setSmapiReleaseError] = useState<string>();
   const [smapiReleaseLoading, setSmapiReleaseLoading] = useState(false);
-  const [smapiDownloading, setSmapiDownloading] = useState(false);
+  const [smapiInstalling, setSmapiInstalling] = useState(false);
+  const [smapiInstallError, setSmapiInstallError] = useState<string>();
+  const [installedSmapi, setInstalledSmapi] = useState<InstalledSmapiResult>();
 
   const loadSmapiRelease = useCallback(async () => {
     setSmapiReleaseLoading(true);
@@ -51,6 +55,11 @@ export function FirstRunSetup({ open, dashboard, onDashboardUpdate, onComplete }
     setPathInput(detectedPath);
     setVerifiedPath(detectedPath);
   }, [detectedPath]);
+
+  useEffect(() => {
+    setInstalledSmapi(undefined);
+    setSmapiInstallError(undefined);
+  }, [dashboard.installation?.path]);
 
   useEffect(() => {
     if (!open || step !== 1 || smapiRelease || smapiReleaseError || smapiReleaseLoading) return;
@@ -93,17 +102,51 @@ export function FirstRunSetup({ open, dashboard, onDashboardUpdate, onComplete }
     onComplete();
   };
 
-  const downloadSmapi = async () => {
-    setSmapiDownloading(true);
-    try {
-      const downloaded = await downloadLatestSmapiInstaller();
-      message.success(`已下载并校验 ${downloaded.fileName}`);
-    } catch (error) {
-      message.error(String(error));
-    } finally {
-      setSmapiDownloading(false);
+  const confirmInstallSmapi = () => {
+    const gamePath = dashboard.installation?.path;
+    if (!gamePath) {
+      message.warning("请先确认有效的游戏目录");
+      return;
     }
+
+    modal.confirm({
+      title: `${dashboard.smapi.installed ? "更新" : "安装"} SMAPI ${smapiRelease?.version ?? "最新稳定版"}`,
+      icon: <SafetyCertificateOutlined />,
+      content: (
+        <div className="smapi-install-confirm">
+          <p>安装程序会下载、解压并修改 Stardew Valley 游戏目录中的 SMAPI 文件。</p>
+          <p><strong>目标目录：</strong><code>{formatDisplayPath(gamePath)}</code></p>
+          <p>继续前请确认游戏已经关闭，并保留现有 Mods 与配置的备份。</p>
+        </div>
+      ),
+      okText: dashboard.smapi.installed ? "确认更新" : "确认安装",
+      cancelText: "取消",
+      onOk: async () => {
+        setSmapiInstalling(true);
+        setSmapiInstallError(undefined);
+        try {
+          const result = await installLatestSmapi(gamePath);
+          const refreshed = await scanGamePath(gamePath);
+          if (!refreshed.smapi.installed) {
+            throw new Error("安装程序已结束，但重新扫描后仍未检测到 SMAPI");
+          }
+          const confirmedVersion = refreshed.smapi.version ?? result.version;
+          onDashboardUpdate(refreshed);
+          setInstalledSmapi({ ...result, version: confirmedVersion });
+          message.success(`SMAPI ${confirmedVersion} 已安装`);
+        } catch (error) {
+          const detail = String(error);
+          setSmapiInstallError(detail);
+          message.error(detail);
+        } finally {
+          setSmapiInstalling(false);
+        }
+      },
+    });
   };
+
+  const smapiInstalled = dashboard.smapi.installed || installedSmapi !== undefined;
+  const installedSmapiVersion = installedSmapi?.version ?? dashboard.smapi.version;
 
   return (
     <Modal
@@ -158,11 +201,11 @@ export function FirstRunSetup({ open, dashboard, onDashboardUpdate, onComplete }
           <div className="setup-step setup-smapi-status">
             <SafetyCertificateOutlined />
             <div>
-              <Tag color={dashboard.smapi.installed ? "green" : "default"}>
-                {dashboard.smapi.installed ? "已安装" : "尚未安装"}
+              <Tag color={smapiInstalled ? "green" : "default"}>
+                {smapiInstalled ? "已安装" : "尚未安装"}
               </Tag>
               {smapiRelease && <Tag color="blue">最新 {smapiRelease.version}</Tag>}
-              <h3>{dashboard.smapi.installed ? `SMAPI ${dashboard.smapi.version ?? "版本待检测"}` : "安装 SMAPI"}</h3>
+              <h3>{smapiInstalled ? `SMAPI ${installedSmapiVersion ?? "版本待检测"}` : "安装 SMAPI"}</h3>
               <p>
                 {smapiRelease
                   ? `${smapiRelease.asset.name} · ${smapiRelease.installerEntry}`
@@ -170,14 +213,28 @@ export function FirstRunSetup({ open, dashboard, onDashboardUpdate, onComplete }
                     ? "正在读取官方稳定版本..."
                     : smapiReleaseError ?? "安装后即可加载和管理 Stardew Valley Mod。"}
               </p>
+              {installedSmapi && (
+                <Alert type="success" showIcon message={`SMAPI ${installedSmapi.version} 已安装`} />
+              )}
+              {smapiInstallError && (
+                <Alert
+                  type="error"
+                  showIcon
+                  closable
+                  message="SMAPI 安装状态需要处理"
+                  description={smapiInstallError}
+                  onClose={() => setSmapiInstallError(undefined)}
+                />
+              )}
               <Space wrap>
                 <Button
                   icon={<SafetyCertificateOutlined />}
-                  loading={smapiDownloading}
-                  disabled={!smapiRelease || smapiReleaseLoading}
-                  onClick={() => void downloadSmapi()}
+                  loading={smapiInstalling}
+                  disabled={smapiInstalling || !dashboard.installation || smapiReleaseLoading}
+                  aria-label="安装或更新 SMAPI"
+                  onClick={confirmInstallSmapi}
                 >
-                  下载官方安装包
+                  安装/更新 SMAPI
                 </Button>
                 {smapiReleaseError && (
                   <Button
@@ -188,11 +245,20 @@ export function FirstRunSetup({ open, dashboard, onDashboardUpdate, onComplete }
                     重试版本信息
                   </Button>
                 )}
+                {(smapiReleaseError || smapiInstallError) && (
+                  <Button
+                    type="link"
+                    icon={<ExportOutlined />}
+                    onClick={() => void openSmapiDownload()}
+                  >
+                    打开官方页面
+                  </Button>
+                )}
               </Space>
             </div>
             <div className="setup-actions split">
-              <Button onClick={() => setStep(0)}>返回</Button>
-              <Button type="primary" onClick={() => setStep(2)}>继续</Button>
+              <Button disabled={smapiInstalling} onClick={() => setStep(0)}>返回</Button>
+              <Button type="primary" disabled={smapiInstalling} onClick={() => setStep(2)}>继续</Button>
             </div>
           </div>
         )}
@@ -205,7 +271,7 @@ export function FirstRunSetup({ open, dashboard, onDashboardUpdate, onComplete }
               <span>游戏目录</span>
               <strong>{dashboard.installation ? "已确认" : "未设置"}</strong>
               <span>SMAPI</span>
-              <strong>{dashboard.smapi.installed ? dashboard.smapi.version ?? "已安装" : "稍后安装"}</strong>
+              <strong>{smapiInstalled ? installedSmapiVersion ?? "已安装" : "稍后安装"}</strong>
             </div>
             <div className="setup-actions split">
               <Button onClick={() => setStep(1)}>返回</Button>

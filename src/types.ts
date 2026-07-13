@@ -135,6 +135,13 @@ export interface DownloadedSmapiInstaller {
   digestVerified: boolean;
 }
 
+export interface InstalledSmapiResult {
+  version: string;
+  platform: SmapiPlatform;
+  installerPath: string;
+  exitCode: number;
+}
+
 export interface AiTranslationStatus {
   configured: boolean;
   apiKeyConfigured: boolean;

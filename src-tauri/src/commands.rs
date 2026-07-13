@@ -91,6 +91,84 @@ pub async fn download_latest_smapi_installer(
 }
 
 #[tauri::command]
+pub async fn install_latest_smapi(
+    app: tauri::AppHandle,
+    manager: tauri::State<'_, GameProcessManager>,
+    game_path: String,
+) -> Result<providers::smapi::InstallSmapiResult, String> {
+    let installation = game::inspect_game(Path::new(&game_path))?;
+    let canonical_game_path = std::path::PathBuf::from(&installation.path);
+    let manager = manager.inner().clone();
+    manager.run_while_stopped(|| Ok(()))?;
+
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("Could not determine the app cache directory: {error}"))?;
+    let downloaded = providers::smapi::download_latest_installer(&cache_dir).await?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        manager.run_while_stopped(|| {
+            let before_install = game::inspect_game(&canonical_game_path)?;
+            if std::path::Path::new(&before_install.path) != canonical_game_path {
+                return Err(
+                    "The game directory changed while preparing the SMAPI installer".into(),
+                );
+            }
+
+            let execution = providers::smapi::install_downloaded_installer(
+                &cache_dir,
+                &downloaded,
+                &canonical_game_path,
+            )?;
+
+            let after_install = game::inspect_game(&canonical_game_path)?;
+            if std::path::Path::new(&after_install.path) != canonical_game_path {
+                return Err("The game directory changed while installing SMAPI".into());
+            }
+            let status = game::inspect_smapi(&canonical_game_path);
+            let version = verify_installed_smapi_version(
+                &status,
+                &execution.release_version,
+                execution.exit_code,
+            )?;
+            Ok(providers::smapi::InstallSmapiResult {
+                version: version.clone(),
+                platform: execution.platform,
+                installer_path: execution.installer_path,
+                exit_code: execution.exit_code,
+                installed_version: Some(version),
+                game_path: after_install.path,
+                message: "SMAPI installation verified successfully".into(),
+            })
+        })
+    })
+    .await
+    .map_err(|error| format!("SMAPI installer task failed: {error}"))?
+}
+
+fn verify_installed_smapi_version(
+    status: &SmapiStatus,
+    expected_version: &str,
+    exit_code: i32,
+) -> Result<String, String> {
+    if !status.installed {
+        return Err(format!(
+            "SMAPI installer exited with code {exit_code}, but no SMAPI executable was found"
+        ));
+    }
+    match status.version.as_deref() {
+        Some(version) if version == expected_version => Ok(version.to_string()),
+        Some(version) => Err(format!(
+            "SMAPI installer exited with code {exit_code}, but version {version} was detected instead of {expected_version}"
+        )),
+        None => Err(format!(
+            "SMAPI installer exited with code {exit_code}, but the installed SMAPI version could not be verified"
+        )),
+    }
+}
+
+#[tauri::command]
 pub fn get_ai_translation_settings(
     app: tauri::AppHandle,
 ) -> Result<providers::translation::AiTranslationStatus, String> {
@@ -238,5 +316,41 @@ fn dashboard_for(game_path: &str) -> Dashboard {
         smapi,
         mods: installed_mods,
         warnings,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn smapi_install_verification_requires_the_expected_version() {
+        let verified = SmapiStatus {
+            installed: true,
+            version: Some("4.5.2".into()),
+            executable: Some("StardewModdingAPI.exe".into()),
+        };
+        assert_eq!(
+            verify_installed_smapi_version(&verified, "4.5.2", 0).unwrap(),
+            "4.5.2"
+        );
+
+        let missing_version = SmapiStatus {
+            version: None,
+            ..verified.clone()
+        };
+        assert!(verify_installed_smapi_version(&missing_version, "4.5.2", 0).is_err());
+
+        let wrong_version = SmapiStatus {
+            version: Some("4.4.0".into()),
+            ..verified.clone()
+        };
+        assert!(verify_installed_smapi_version(&wrong_version, "4.5.2", 0).is_err());
+
+        let missing_executable = SmapiStatus {
+            installed: false,
+            ..verified
+        };
+        assert!(verify_installed_smapi_version(&missing_executable, "4.5.2", 0).is_err());
     }
 }

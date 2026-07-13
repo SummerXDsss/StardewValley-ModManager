@@ -634,6 +634,28 @@ button, input {
   border-radius: 8px;
 }
 
+.smapi-alerts {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.smapi-install-confirm {
+  display: grid;
+  gap: 10px;
+}
+
+.smapi-install-confirm p {
+  margin: 0;
+}
+
+.smapi-install-confirm code {
+  overflow-wrap: anywhere;
+  color: var(--color-foreground);
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+}
+
 .smapi-mark { 
   color: var(--color-primary); 
   font-size: 52px;
@@ -884,6 +906,11 @@ button, input {
 .setup-smapi-status p {
   margin: 0;
   color: var(--color-dark-muted);
+}
+
+.setup-smapi-status > div > .ant-alert,
+.setup-smapi-status > div > .ant-space {
+  margin-top: 12px;
 }
 
 .setup-smapi-status .setup-actions {

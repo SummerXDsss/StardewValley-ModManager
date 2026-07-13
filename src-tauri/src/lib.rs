@@ -17,6 +17,7 @@ pub fn run() {
             commands::open_smapi_download,
             commands::get_latest_smapi_release,
             commands::download_latest_smapi_installer,
+            commands::install_latest_smapi,
             commands::get_ai_translation_settings,
             commands::save_ai_translation_settings,
             commands::clear_ai_translation_settings,

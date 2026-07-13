@@ -1,22 +1,23 @@
 import { useEffect, useState } from "react";
 import { Alert, App, Button, Space, Tag } from "antd";
 import {
-  CloudDownloadOutlined,
   ExportOutlined,
   ReloadOutlined,
   RocketOutlined,
   SafetyCertificateOutlined,
 } from "@ant-design/icons";
 import { PageTitle } from "../shared";
-import { downloadLatestSmapiInstaller, getLatestSmapiRelease } from "../../api";
-import type { Dashboard, DownloadedSmapiInstaller, SmapiReleaseInfo } from "../../types";
+import { getLatestSmapiRelease, installLatestSmapi } from "../../api";
+import type { Dashboard, InstalledSmapiResult, SmapiReleaseInfo } from "../../types";
 import { compareSemver } from "../../utils/semver";
+import { formatDisplayPath } from "../../utils/path";
 
 interface SmapiPageProps {
   dashboard: Dashboard;
   gameRunning?: boolean;
   onLaunchSmapi: () => void;
   onOpenSmapiDownload: () => void;
+  onDashboardRefresh: () => Promise<Dashboard | undefined>;
 }
 
 function formatBytes(value?: number): string {
@@ -24,13 +25,20 @@ function formatBytes(value?: number): string {
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function SmapiPage({ dashboard, gameRunning = false, onLaunchSmapi, onOpenSmapiDownload }: SmapiPageProps) {
-  const { message } = App.useApp();
+export function SmapiPage({
+  dashboard,
+  gameRunning = false,
+  onLaunchSmapi,
+  onOpenSmapiDownload,
+  onDashboardRefresh,
+}: SmapiPageProps) {
+  const { message, modal } = App.useApp();
   const [release, setRelease] = useState<SmapiReleaseInfo>();
   const [releaseLoading, setReleaseLoading] = useState(true);
   const [releaseError, setReleaseError] = useState<string>();
-  const [downloading, setDownloading] = useState(false);
-  const [downloaded, setDownloaded] = useState<DownloadedSmapiInstaller>();
+  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState<string>();
+  const [installedResult, setInstalledResult] = useState<InstalledSmapiResult>();
 
   const loadRelease = async () => {
     setReleaseLoading(true);
@@ -48,20 +56,60 @@ export function SmapiPage({ dashboard, gameRunning = false, onLaunchSmapi, onOpe
     void loadRelease();
   }, []);
 
-  const downloadRelease = async () => {
-    setDownloading(true);
-    try {
-      const result = await downloadLatestSmapiInstaller();
-      setDownloaded(result);
-      message.success(`已下载并校验 ${result.fileName}`);
-    } catch (error) {
-      message.error(String(error));
-    } finally {
-      setDownloading(false);
+  useEffect(() => {
+    setInstalledResult(undefined);
+    setInstallError(undefined);
+  }, [dashboard.installation?.path]);
+
+  const confirmInstall = () => {
+    const gamePath = dashboard.installation?.path;
+    if (!gamePath) {
+      message.warning("请先设置有效的游戏目录");
+      return;
     }
+    if (gameRunning) {
+      message.warning("请先关闭游戏，再安装或更新 SMAPI");
+      return;
+    }
+
+    modal.confirm({
+      title: `${dashboard.smapi.installed ? "更新" : "安装"} SMAPI ${release?.version ?? "最新稳定版"}`,
+      icon: <SafetyCertificateOutlined />,
+      content: (
+        <div className="smapi-install-confirm">
+          <p>安装程序会下载、解压并修改 Stardew Valley 游戏目录中的 SMAPI 文件。</p>
+          <p><strong>目标目录：</strong><code>{formatDisplayPath(gamePath)}</code></p>
+          <p>继续前请确认游戏已经关闭，并保留现有 Mods 与配置的备份。</p>
+        </div>
+      ),
+      okText: dashboard.smapi.installed ? "确认更新" : "确认安装",
+      cancelText: "取消",
+      okButtonProps: { disabled: installing },
+      onOk: async () => {
+        setInstalling(true);
+        setInstallError(undefined);
+        try {
+          const result = await installLatestSmapi(gamePath);
+          const refreshed = await onDashboardRefresh();
+          if (!refreshed?.smapi.installed) {
+            throw new Error("安装程序已结束，但重新扫描后仍未检测到 SMAPI");
+          }
+          const confirmedVersion = refreshed.smapi.version ?? result.version;
+          setInstalledResult({ ...result, version: confirmedVersion });
+          message.success(`SMAPI ${confirmedVersion} 已安装`);
+        } catch (error) {
+          const detail = String(error);
+          setInstallError(detail);
+          message.error(detail);
+        } finally {
+          setInstalling(false);
+        }
+      },
+    });
   };
 
-  const installedVersion = dashboard.smapi.version;
+  const installedVersion = installedResult?.version ?? dashboard.smapi.version;
+  const smapiInstalled = dashboard.smapi.installed || installedResult !== undefined;
   const versionComparison = release && installedVersion
     ? compareSemver(release.version, installedVersion)
     : undefined;
@@ -70,24 +118,38 @@ export function SmapiPage({ dashboard, gameRunning = false, onLaunchSmapi, onOpe
   return (
     <section>
       <PageTitle title="SMAPI" subtitle="模组加载器与运行环境" />
-      {releaseError && (
-        <Alert
-          type="warning"
-          showIcon
-          message="无法读取 SMAPI 官方 Release"
-          description={releaseError}
-          action={<Button icon={<ReloadOutlined />} onClick={() => void loadRelease()}>重试</Button>}
-        />
+      {(releaseError || installError) && (
+        <div className="smapi-alerts">
+          {releaseError && (
+            <Alert
+              type="warning"
+              showIcon
+              message="无法读取 SMAPI 官方 Release"
+              description={releaseError}
+              action={<Button icon={<ReloadOutlined />} onClick={() => void loadRelease()}>重试</Button>}
+            />
+          )}
+          {installError && (
+            <Alert
+              type="error"
+              showIcon
+              closable
+              message="SMAPI 安装未完成"
+              description={installError}
+              onClose={() => setInstallError(undefined)}
+            />
+          )}
+        </div>
       )}
       <div className="smapi-panel">
         <SafetyCertificateOutlined className="smapi-mark" />
         <div>
-          <Tag color={dashboard.smapi.installed ? "green" : "red"}>
-            {dashboard.smapi.installed ? "已安装" : "未安装"}
+          <Tag color={smapiInstalled ? "green" : "red"}>
+            {smapiInstalled ? "已安装" : "未安装"}
           </Tag>
           {updateAvailable && <Tag color="gold">可更新</Tag>}
           <h2>
-            {dashboard.smapi.installed
+            {smapiInstalled
               ? `SMAPI ${installedVersion ?? "版本未知"}`
               : release
                 ? `可安装 SMAPI ${release.version}`
@@ -111,15 +173,16 @@ export function SmapiPage({ dashboard, gameRunning = false, onLaunchSmapi, onOpe
             </Button>
           )}
           <Button
-            type={dashboard.smapi.installed ? "default" : "primary"}
-            icon={<CloudDownloadOutlined />}
-            loading={releaseLoading || downloading}
-            disabled={!release}
-            onClick={() => void downloadRelease()}
+            type={smapiInstalled ? "default" : "primary"}
+            icon={<SafetyCertificateOutlined />}
+            loading={installing}
+            disabled={installing || releaseLoading || !dashboard.installation || gameRunning}
+            aria-label={smapiInstalled ? "安装或更新 SMAPI" : "安装 SMAPI"}
+            onClick={confirmInstall}
           >
-            {updateAvailable ? "下载更新" : dashboard.smapi.installed ? "重新下载安装包" : "下载官方安装包"}
+            {updateAvailable ? "更新 SMAPI" : smapiInstalled ? "重新安装 SMAPI" : "安装 SMAPI"}
           </Button>
-          {releaseError && (
+          {(releaseError || installError) && (
             <Button type="link" icon={<ExportOutlined />} onClick={onOpenSmapiDownload}>
               打开官方页面
             </Button>
@@ -129,7 +192,7 @@ export function SmapiPage({ dashboard, gameRunning = false, onLaunchSmapi, onOpe
       <div className="info-list">
         <div>
           <span>已安装版本</span>
-          <strong>{dashboard.smapi.installed ? installedVersion ?? "无法读取" : "未安装"}</strong>
+          <strong>{smapiInstalled ? installedVersion ?? "无法读取" : "未安装"}</strong>
         </div>
         <div>
           <span>官方最新稳定版</span>
@@ -143,10 +206,10 @@ export function SmapiPage({ dashboard, gameRunning = false, onLaunchSmapi, onOpe
           <span>官方安装资产</span>
           <strong>{release ? `${release.asset.name} · ${formatBytes(release.asset.size)}` : "等待 Release 信息"}</strong>
         </div>
-        {downloaded && (
+        {installedResult && (
           <div>
-            <span>下载校验</span>
-            <strong>{downloaded.digestVerified ? "SHA-256 已验证" : `SHA-256 ${downloaded.sha256.slice(0, 12)}...`}</strong>
+            <span>最近安装结果</span>
+            <strong>SMAPI {installedResult.version} · 退出码 {installedResult.exitCode}</strong>
           </div>
         )}
       </div>

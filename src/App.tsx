@@ -161,6 +161,7 @@ export default function App() {
             gameRunning={gameRunning}
             onLaunchSmapi={handleLaunchSmapi}
             onOpenSmapiDownload={handleOpenSmapiDownload}
+            onDashboardRefresh={refresh}
           />
         );
       case "settings":

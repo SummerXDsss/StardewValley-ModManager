@@ -13,6 +13,7 @@ Valley Steward 是一个面向《星露谷物语》PC 玩家的轻量 Mod 管理
 - 首次启动引导用户确认自动检测路径、SMAPI 状态与安装包；顶部默认隐藏完整路径，点击后可查看或修改；
 - 检测 Stardew Valley 与 SMAPI 可执行文件，并从 DLL 版本资源或官方 Mod 清单读取 SMAPI 版本；
 - 读取 `Pathoschild/SMAPI` 最新稳定 Release，严格选择标准跨平台安装包，限制大小并计算 SHA-256；GitHub 提供摘要时会进一步核验；
+- 支持确认后一键安装或更新 SMAPI：受限解压官方 ZIP，直接调用当前平台安装器，并在结束后重新检测实际安装版本；
 - 一键启动原版游戏或 SMAPI；
 - 支持通过 `--mods-path` 启动指定 Mod 配置目录；
 - 可选择“记住上次选择”，下次继续使用相同启动模式；
@@ -174,6 +175,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 - 上游链接限制为受信任域名和 HTTPS；
 - API Key 由 Windows Credential Manager、macOS Keychain 或 Linux Secret Service 保存，前端无法读取原文；
 - AI 翻译 API Key 同样进入系统凭据库；远程 Base URL 必须使用 HTTPS，本机回环地址可使用 HTTP；
+- SMAPI 安装只执行校验后的官方 Release，拒绝路径穿越、符号链接、特殊文件和超限压缩内容；Windows 安装器使用隐藏的新控制台并设有总超时；
 - API Key、Token、游戏路径和日志不会提交到仓库；
 - `.env` 与本地密钥文件已加入 Git 忽略规则。
 
@@ -182,7 +184,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 - Nexus V3 没有面向玩家的全文搜索端点，应用会聚合官方趋势、最新更新和最新发布列表后在本地搜索；
 - Nexus 直接下载受账号等级、作者设置和站点权限限制，接口拒绝时不会绕过；
 - ModDrop 暂无已接入的稳定公开 API；
-- 本地压缩包安装、更新回滚和 SMAPI 自动安装仍处于后续迭代；
+- 本地 Mod 压缩包安装与更新回滚仍处于后续迭代；
 - 浏览器预览无法执行本地文件操作，完整功能需要运行 Tauri 应用。
 
 ## 文档

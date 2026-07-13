@@ -7,6 +7,7 @@ import type {
   DownloadedModFile,
   DownloadedSmapiInstaller,
   GameProcessStatus,
+  InstalledSmapiResult,
   LaunchRequest,
   NexusAuthStatus,
   NexusModDetails,
@@ -166,6 +167,11 @@ export async function downloadLatestSmapiInstaller(): Promise<DownloadedSmapiIns
     sha256: "",
     digestVerified: false,
   };
+}
+
+export async function installLatestSmapi(gamePath: string): Promise<InstalledSmapiResult> {
+  if (!isTauri()) throw new Error("SMAPI 一键安装仅支持 Tauri 桌面应用");
+  return invoke<InstalledSmapiResult>("install_latest_smapi", { gamePath });
 }
 
 export async function getAiTranslationSettings(): Promise<AiTranslationStatus> {

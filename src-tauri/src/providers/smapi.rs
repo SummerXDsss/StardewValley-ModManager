@@ -1,11 +1,29 @@
 use std::{
-    io::ErrorKind,
-    path::{Path, PathBuf},
+    collections::HashSet,
+    fs::File,
+    io::{self, ErrorKind, Read, Seek, SeekFrom, Write},
+    path::{Component, Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Mutex, OnceLock,
     },
     time::{Duration, Instant},
+};
+
+#[cfg(windows)]
+use std::{
+    ffi::OsStr,
+    mem::size_of,
+    os::windows::{
+        ffi::OsStrExt,
+        io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    },
+    ptr,
+};
+#[cfg(unix)]
+use std::{
+    process::{Command, Stdio},
+    thread,
 };
 
 use reqwest::{redirect::Policy, Client, StatusCode, Url};
@@ -22,8 +40,16 @@ const USER_AGENT: &str =
 const CACHE_TTL: Duration = Duration::from_secs(15 * 60);
 const METADATA_TIMEOUT: Duration = Duration::from_secs(15);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+#[cfg(unix)]
+const INSTALL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_REDIRECTS: usize = 10;
 pub const MAX_INSTALLER_SIZE: u64 = 256 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES: usize = 2_048;
+const MAX_EXTRACTED_FILE_SIZE: u64 = 64 * 1024 * 1024;
+const MAX_EXTRACTED_TOTAL_SIZE: u64 = 512 * 1024 * 1024;
+const MAX_ARCHIVE_PATH_BYTES: usize = 1_024;
+const MAX_ARCHIVE_COMPONENTS: usize = 32;
 
 static RELEASE_CACHE: OnceLock<Mutex<Option<CachedRelease>>> = OnceLock::new();
 static PART_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -82,6 +108,45 @@ pub struct DownloadedSmapiInstaller {
     pub size: u64,
     pub sha256: String,
     pub digest_verified: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmapiInstallerExecution {
+    pub release_version: String,
+    pub platform: SmapiPlatform,
+    pub installer_path: String,
+    pub exit_code: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallSmapiResult {
+    pub version: String,
+    pub platform: SmapiPlatform,
+    pub installer_path: String,
+    pub exit_code: i32,
+    pub installed_version: Option<String>,
+    pub game_path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExtractionLimits {
+    max_entries: usize,
+    max_file_size: u64,
+    max_total_size: u64,
+}
+
+const EXTRACTION_LIMITS: ExtractionLimits = ExtractionLimits {
+    max_entries: MAX_ARCHIVE_ENTRIES,
+    max_file_size: MAX_EXTRACTED_FILE_SIZE,
+    max_total_size: MAX_EXTRACTED_TOTAL_SIZE,
+};
+
+struct ExtractedInstaller {
+    directory: PathBuf,
+    root: PathBuf,
+    executable: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,6 +252,575 @@ pub async fn download_installer(
         sha256: outcome.sha256,
         digest_verified: outcome.digest_verified,
     })
+}
+
+pub fn install_downloaded_installer(
+    cache_dir: &Path,
+    downloaded: &DownloadedSmapiInstaller,
+    game_path: &Path,
+) -> Result<SmapiInstallerExecution, String> {
+    validate_tag(&downloaded.version)?;
+    if !game_path.is_absolute() || !game_path.is_dir() {
+        return Err("The SMAPI game path must be an existing absolute directory".into());
+    }
+
+    let cache_root = cache_dir
+        .canonicalize()
+        .map_err(|error| format!("Could not resolve the app cache directory: {error}"))?;
+    let archive_path = PathBuf::from(&downloaded.path)
+        .canonicalize()
+        .map_err(|error| format!("Could not resolve the downloaded SMAPI installer: {error}"))?;
+    if !archive_path.starts_with(&cache_root)
+        || archive_path.file_name() != Some(downloaded.file_name.as_ref())
+    {
+        return Err("The downloaded SMAPI installer is outside the app cache".into());
+    }
+
+    let platform = current_platform()?;
+    let extraction_parent = cache_root
+        .join("installers")
+        .join("smapi")
+        .join(&downloaded.version);
+    std::fs::create_dir_all(&extraction_parent)
+        .map_err(|error| format!("Could not create the SMAPI extraction directory: {error}"))?;
+    let sequence = PART_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let extraction_directory =
+        extraction_parent.join(format!(".install-{}-{sequence}", std::process::id()));
+    std::fs::create_dir(&extraction_directory).map_err(|error| {
+        format!("Could not create a private SMAPI extraction directory: {error}")
+    })?;
+
+    let extracted = match extract_installer_archive(
+        &archive_path,
+        &extraction_directory,
+        downloaded,
+        platform,
+        EXTRACTION_LIMITS,
+    ) {
+        Ok(extracted) => extracted,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&extraction_directory);
+            return Err(error);
+        }
+    };
+
+    let run_result = run_native_installer(&extracted.executable, &extracted.root, game_path);
+    let _ = std::fs::remove_dir_all(&extracted.directory);
+    let exit_code = run_result?;
+
+    Ok(SmapiInstallerExecution {
+        release_version: downloaded.version.clone(),
+        platform,
+        installer_path: archive_path.to_string_lossy().into_owned(),
+        exit_code,
+    })
+}
+
+fn extract_installer_archive(
+    archive_path: &Path,
+    destination: &Path,
+    downloaded: &DownloadedSmapiInstaller,
+    platform: SmapiPlatform,
+    limits: ExtractionLimits,
+) -> Result<ExtractedInstaller, String> {
+    let mut archive_file = File::open(archive_path)
+        .map_err(|error| format!("Could not open the SMAPI installer archive: {error}"))?;
+    verify_downloaded_archive(&mut archive_file, downloaded)?;
+
+    let mut archive = zip::ZipArchive::new(archive_file)
+        .map_err(|error| format!("Could not read the SMAPI installer ZIP: {error}"))?;
+    if archive.is_empty() {
+        return Err("The SMAPI installer ZIP is empty".into());
+    }
+    if archive.len() > limits.max_entries {
+        return Err(format!(
+            "The SMAPI installer ZIP has too many entries ({} > {})",
+            archive.len(),
+            limits.max_entries
+        ));
+    }
+
+    let expected_root = PathBuf::from(format!("SMAPI {} installer", downloaded.version));
+    let mut extracted_paths = HashSet::with_capacity(archive.len());
+    let mut total_size = 0_u64;
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("Could not read SMAPI ZIP entry {index}: {error}"))?;
+        validate_archive_entry_type(entry.is_dir(), entry.is_symlink(), entry.unix_mode())?;
+        let relative_path = safe_archive_entry_path(&entry, &expected_root)?;
+        let path_key = archive_path_key(&relative_path);
+        if !extracted_paths.insert(path_key) {
+            return Err(format!(
+                "The SMAPI installer ZIP contains a duplicate path: {}",
+                relative_path.display()
+            ));
+        }
+
+        if entry.size() > limits.max_file_size {
+            return Err(format!(
+                "A SMAPI installer file exceeds the {} byte limit: {}",
+                limits.max_file_size,
+                relative_path.display()
+            ));
+        }
+        total_size = total_size
+            .checked_add(entry.size())
+            .ok_or_else(|| "SMAPI installer extracted size overflowed".to_string())?;
+        if total_size > limits.max_total_size {
+            return Err(format!(
+                "The extracted SMAPI installer exceeds the {} byte limit",
+                limits.max_total_size
+            ));
+        }
+
+        let output_path = destination.join(&relative_path);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&output_path).map_err(|error| {
+                format!(
+                    "Could not create SMAPI installer directory {}: {error}",
+                    relative_path.display()
+                )
+            })?;
+            set_extracted_permissions(&output_path, entry.unix_mode(), true)?;
+            continue;
+        }
+
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!("Could not create a SMAPI installer parent directory: {error}")
+            })?;
+        }
+        let mut output = File::create(&output_path).map_err(|error| {
+            format!(
+                "Could not create SMAPI installer file {}: {error}",
+                relative_path.display()
+            )
+        })?;
+        let copied = io::copy(
+            &mut entry.by_ref().take(limits.max_file_size + 1),
+            &mut output,
+        )
+        .map_err(|error| {
+            format!(
+                "Could not extract SMAPI installer file {}: {error}",
+                relative_path.display()
+            )
+        })?;
+        if copied != entry.size() {
+            return Err(format!(
+                "SMAPI installer file size changed while extracting {}",
+                relative_path.display()
+            ));
+        }
+        output
+            .flush()
+            .map_err(|error| format!("Could not flush a SMAPI installer file: {error}"))?;
+        set_extracted_permissions(&output_path, entry.unix_mode(), false)?;
+    }
+
+    let root = destination.join(&expected_root);
+    let platform_directory = root
+        .join("internal")
+        .join(platform_directory_name(platform));
+    let executable = platform_directory.join(platform_installer_name(platform));
+    for required in [
+        executable.as_path(),
+        platform_directory.join("SMAPI.Installer.dll").as_path(),
+        platform_directory.join("install.dat").as_path(),
+    ] {
+        if !required.is_file() {
+            return Err(format!(
+                "The SMAPI installer ZIP is missing {}",
+                required
+                    .strip_prefix(destination)
+                    .unwrap_or(required)
+                    .display()
+            ));
+        }
+    }
+
+    ensure_installer_executable(&executable)?;
+    Ok(ExtractedInstaller {
+        directory: destination.to_path_buf(),
+        root,
+        executable,
+    })
+}
+
+fn verify_downloaded_archive(
+    archive_file: &mut File,
+    downloaded: &DownloadedSmapiInstaller,
+) -> Result<(), String> {
+    validate_asset_size(downloaded.size)?;
+    if downloaded.sha256.len() != 64
+        || !downloaded
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("The cached SMAPI installer has an invalid SHA-256 value".into());
+    }
+    let metadata = archive_file
+        .metadata()
+        .map_err(|error| format!("Could not inspect the cached SMAPI installer: {error}"))?;
+    if metadata.len() != downloaded.size {
+        return Err(format!(
+            "The cached SMAPI installer size changed (expected {}, received {})",
+            downloaded.size,
+            metadata.len()
+        ));
+    }
+
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = archive_file
+            .read(&mut buffer)
+            .map_err(|error| format!("Could not verify the cached SMAPI installer: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    let actual = format!("{:x}", hasher.finalize());
+    if !actual.eq_ignore_ascii_case(&downloaded.sha256) {
+        return Err(format!(
+            "The cached SMAPI installer SHA-256 changed (expected {}, received {actual})",
+            downloaded.sha256
+        ));
+    }
+    archive_file
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| format!("Could not rewind the SMAPI installer ZIP: {error}"))?;
+    Ok(())
+}
+
+fn safe_archive_entry_path(
+    entry: &zip::read::ZipFile<'_, File>,
+    expected_root: &Path,
+) -> Result<PathBuf, String> {
+    let raw_name = std::str::from_utf8(entry.name_raw())
+        .map_err(|_| "The SMAPI installer ZIP contains a non-UTF-8 path".to_string())?;
+    if raw_name.is_empty()
+        || raw_name.len() > MAX_ARCHIVE_PATH_BYTES
+        || raw_name.contains('\\')
+        || raw_name.contains('\0')
+    {
+        return Err("The SMAPI installer ZIP contains an unsafe path".into());
+    }
+
+    let enclosed = entry
+        .enclosed_name()
+        .ok_or_else(|| format!("Unsafe path in the SMAPI installer ZIP: {raw_name}"))?;
+    let mut component_count = 0_usize;
+    for component in enclosed.components() {
+        let Component::Normal(component) = component else {
+            return Err(format!(
+                "Unsafe path component in the SMAPI installer ZIP: {raw_name}"
+            ));
+        };
+        component_count += 1;
+        let component = component
+            .to_str()
+            .ok_or_else(|| "The SMAPI installer ZIP path is not UTF-8".to_string())?;
+        if component.is_empty()
+            || component.ends_with([' ', '.'])
+            || component.contains(':')
+            || component.chars().any(char::is_control)
+        {
+            return Err(format!(
+                "Unsafe path component in the SMAPI installer ZIP: {raw_name}"
+            ));
+        }
+    }
+    if component_count == 0 || component_count > MAX_ARCHIVE_COMPONENTS {
+        return Err(format!(
+            "The SMAPI installer ZIP path has too many components: {raw_name}"
+        ));
+    }
+    if !enclosed.starts_with(expected_root) {
+        return Err(format!(
+            "The SMAPI installer ZIP contains a file outside {}: {raw_name}",
+            expected_root.display()
+        ));
+    }
+    if enclosed == expected_root && !entry.is_dir() {
+        return Err("The SMAPI installer root entry must be a directory".into());
+    }
+    Ok(enclosed)
+}
+
+fn validate_archive_entry_type(
+    is_directory: bool,
+    is_symlink: bool,
+    unix_mode: Option<u32>,
+) -> Result<(), String> {
+    if is_symlink {
+        return Err("The SMAPI installer ZIP contains a symbolic link".into());
+    }
+    if let Some(mode) = unix_mode {
+        let file_type = mode & 0o170_000;
+        let expected_type = if is_directory { 0o040_000 } else { 0o100_000 };
+        if file_type != 0 && file_type != expected_type {
+            return Err("The SMAPI installer ZIP contains a special filesystem entry".into());
+        }
+    }
+    Ok(())
+}
+
+fn archive_path_key(path: &Path) -> String {
+    let key = path.to_string_lossy().replace('\\', "/");
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    return key.to_lowercase();
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    key
+}
+
+#[cfg(unix)]
+fn set_extracted_permissions(
+    path: &Path,
+    archive_mode: Option<u32>,
+    is_directory: bool,
+) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let executable = archive_mode.is_some_and(|mode| mode & 0o111 != 0);
+    let mode = if is_directory || executable {
+        0o700
+    } else {
+        0o600
+    };
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .map_err(|error| format!("Could not set SMAPI installer permissions: {error}"))
+}
+
+#[cfg(not(unix))]
+fn set_extracted_permissions(
+    _path: &Path,
+    _archive_mode: Option<u32>,
+    _is_directory: bool,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_installer_executable(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("Could not make the SMAPI installer executable: {error}"))
+}
+
+#[cfg(not(unix))]
+fn ensure_installer_executable(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+fn platform_directory_name(platform: SmapiPlatform) -> &'static str {
+    match platform {
+        SmapiPlatform::Windows => "windows",
+        SmapiPlatform::Macos => "macOS",
+        SmapiPlatform::Linux => "linux",
+    }
+}
+
+fn platform_installer_name(platform: SmapiPlatform) -> &'static str {
+    match platform {
+        SmapiPlatform::Windows => "SMAPI.Installer.exe",
+        SmapiPlatform::Macos | SmapiPlatform::Linux => "SMAPI.Installer",
+    }
+}
+
+#[cfg(unix)]
+fn run_native_installer(
+    executable: &Path,
+    installer_root: &Path,
+    game_path: &Path,
+) -> Result<i32, String> {
+    #[cfg(target_os = "macos")]
+    clear_macos_quarantine(&installer_root.join("internal"));
+
+    let mut child = Command::new(executable)
+        .arg("--install")
+        .arg("--game-path")
+        .arg(game_path)
+        .arg("--no-prompt")
+        .current_dir(installer_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("Could not start the SMAPI installer: {error}"))?;
+
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("Could not read the SMAPI installer status: {error}"))?
+        {
+            return Ok(status.code().unwrap_or(-1));
+        }
+        if started.elapsed() >= INSTALL_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("The SMAPI installer timed out and was stopped".into());
+        }
+        thread::sleep(INSTALL_POLL_INTERVAL);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn clear_macos_quarantine(internal_directory: &Path) {
+    let _ = Command::new("/usr/bin/xattr")
+        .args(["-r", "-d", "com.apple.quarantine"])
+        .arg(internal_directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(windows)]
+fn run_native_installer(
+    executable: &Path,
+    installer_root: &Path,
+    game_path: &Path,
+) -> Result<i32, String> {
+    use windows_sys::Win32::{
+        Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT},
+        System::Threading::{
+            CreateProcessW, GetExitCodeProcess, TerminateProcess, WaitForSingleObject,
+            CREATE_NEW_CONSOLE, PROCESS_INFORMATION, STARTF_USESHOWWINDOW, STARTUPINFOW,
+        },
+        UI::WindowsAndMessaging::SW_HIDE,
+    };
+
+    let application = wide_null(executable.as_os_str(), "SMAPI installer path")?;
+    let current_directory = wide_null(installer_root.as_os_str(), "SMAPI installer directory")?;
+    let arguments = [
+        OsStr::new("--install"),
+        OsStr::new("--game-path"),
+        game_path.as_os_str(),
+        OsStr::new("--no-prompt"),
+    ];
+    let mut command_line = windows_command_line(executable.as_os_str(), &arguments)?;
+
+    let startup = STARTUPINFOW {
+        cb: size_of::<STARTUPINFOW>() as u32,
+        dwFlags: STARTF_USESHOWWINDOW,
+        wShowWindow: SW_HIDE as u16,
+        ..Default::default()
+    };
+    let mut process_information = PROCESS_INFORMATION::default();
+    let created = unsafe {
+        CreateProcessW(
+            application.as_ptr(),
+            command_line.as_mut_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            CREATE_NEW_CONSOLE,
+            ptr::null(),
+            current_directory.as_ptr(),
+            &startup,
+            &mut process_information,
+        )
+    };
+    if created == 0 {
+        return Err(format!(
+            "Could not start the hidden SMAPI installer: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let process = unsafe { OwnedHandle::from_raw_handle(process_information.hProcess) };
+    let thread_handle = unsafe { OwnedHandle::from_raw_handle(process_information.hThread) };
+    drop(thread_handle);
+
+    let timeout_millis = u32::try_from(INSTALL_TIMEOUT.as_millis()).unwrap_or(u32::MAX);
+    let wait_result = unsafe { WaitForSingleObject(process.as_raw_handle(), timeout_millis) };
+    if wait_result == WAIT_TIMEOUT {
+        let terminated = unsafe { TerminateProcess(process.as_raw_handle(), 1) };
+        if terminated != 0 {
+            let _ = unsafe { WaitForSingleObject(process.as_raw_handle(), 5_000) };
+        }
+        return Err("The SMAPI installer timed out and was stopped".into());
+    }
+    if wait_result != WAIT_OBJECT_0 {
+        let terminated = unsafe { TerminateProcess(process.as_raw_handle(), 1) };
+        if terminated != 0 {
+            let _ = unsafe { WaitForSingleObject(process.as_raw_handle(), 5_000) };
+        }
+        return Err(format!(
+            "Could not wait for the SMAPI installer: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let mut exit_code = 0_u32;
+    let read_exit_code = unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut exit_code) };
+    if read_exit_code == 0 {
+        return Err(format!(
+            "Could not read the SMAPI installer exit code: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(exit_code as i32)
+}
+
+#[cfg(windows)]
+fn wide_null(value: &OsStr, label: &str) -> Result<Vec<u16>, String> {
+    let mut wide = value.encode_wide().collect::<Vec<_>>();
+    if wide.contains(&0) {
+        return Err(format!("The {label} contains a NUL character"));
+    }
+    wide.push(0);
+    Ok(wide)
+}
+
+#[cfg(windows)]
+fn windows_command_line(executable: &OsStr, arguments: &[&OsStr]) -> Result<Vec<u16>, String> {
+    let mut command_line = Vec::new();
+    append_quoted_windows_argument(&mut command_line, executable)?;
+    for argument in arguments {
+        command_line.push(b' ' as u16);
+        append_quoted_windows_argument(&mut command_line, argument)?;
+    }
+    if command_line.len() >= 32_767 {
+        return Err("The SMAPI installer command line is too long".into());
+    }
+    command_line.push(0);
+    Ok(command_line)
+}
+
+#[cfg(windows)]
+fn append_quoted_windows_argument(output: &mut Vec<u16>, argument: &OsStr) -> Result<(), String> {
+    let units = argument.encode_wide().collect::<Vec<_>>();
+    if units.contains(&0) {
+        return Err("A SMAPI installer argument contains a NUL character".into());
+    }
+
+    output.push(b'"' as u16);
+    let mut backslashes = 0_usize;
+    for unit in units {
+        if unit == b'\\' as u16 {
+            backslashes += 1;
+            continue;
+        }
+        if unit == b'"' as u16 {
+            output.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2 + 1));
+            output.push(unit);
+        } else {
+            output.extend(std::iter::repeat_n(b'\\' as u16, backslashes));
+            output.push(unit);
+        }
+        backslashes = 0;
+    }
+    output.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2));
+    output.push(b'"' as u16);
+    Ok(())
 }
 
 async fn fetch_latest_release(client: &Client) -> Result<SmapiReleaseInfo, String> {
@@ -631,6 +1265,31 @@ fn installer_entry_for(platform: SmapiPlatform) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zip::write::SimpleFileOptions;
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let sequence = PART_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "valley-steward-smapi-test-{}-{sequence}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn api_asset(name: &str, url: &str) -> ApiReleaseAsset {
         ApiReleaseAsset {
@@ -653,6 +1312,59 @@ mod tests {
             prerelease: false,
             assets,
         }
+    }
+
+    fn write_test_archive(directory: &Path, entries: &[(&str, &[u8])]) -> DownloadedSmapiInstaller {
+        let file_name = "SMAPI-4.5.2-installer.zip";
+        let path = directory.join(file_name);
+        let file = File::create(&path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        for (name, content) in entries {
+            let options = SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored)
+                .unix_permissions(if name.ends_with("SMAPI.Installer.exe") {
+                    0o755
+                } else {
+                    0o644
+                });
+            if name.ends_with('/') {
+                archive.add_directory(*name, options).unwrap();
+            } else {
+                archive.start_file(*name, options).unwrap();
+                archive.write_all(content).unwrap();
+            }
+        }
+        archive.finish().unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        DownloadedSmapiInstaller {
+            path: path.to_string_lossy().into_owned(),
+            file_name: file_name.into(),
+            version: "4.5.2".into(),
+            size: bytes.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(&bytes)),
+            digest_verified: true,
+        }
+    }
+
+    fn valid_windows_archive_entries() -> Vec<(&'static str, &'static [u8])> {
+        vec![
+            ("SMAPI 4.5.2 installer/", b""),
+            ("SMAPI 4.5.2 installer/internal/", b""),
+            ("SMAPI 4.5.2 installer/internal/windows/", b""),
+            (
+                "SMAPI 4.5.2 installer/internal/windows/SMAPI.Installer.exe",
+                b"test executable",
+            ),
+            (
+                "SMAPI 4.5.2 installer/internal/windows/SMAPI.Installer.dll",
+                b"test library",
+            ),
+            (
+                "SMAPI 4.5.2 installer/internal/windows/install.dat",
+                b"test payload",
+            ),
+        ]
     }
 
     #[test]
@@ -796,5 +1508,119 @@ mod tests {
         assert!(validate_asset_size(0).is_err());
         assert!(validate_asset_size(MAX_INSTALLER_SIZE).is_ok());
         assert!(validate_asset_size(MAX_INSTALLER_SIZE + 1).is_err());
+    }
+
+    #[test]
+    fn safely_extracts_only_the_expected_installer_tree() {
+        let temporary = TestDirectory::new();
+        let downloaded = write_test_archive(temporary.path(), &valid_windows_archive_entries());
+        let destination = temporary.path().join("extract");
+        std::fs::create_dir(&destination).unwrap();
+
+        let extracted = extract_installer_archive(
+            Path::new(&downloaded.path),
+            &destination,
+            &downloaded,
+            SmapiPlatform::Windows,
+            EXTRACTION_LIMITS,
+        )
+        .unwrap();
+        assert!(extracted.executable.is_file());
+        assert!(extracted.root.starts_with(&destination));
+        assert_eq!(
+            std::fs::read(extracted.executable).unwrap(),
+            b"test executable"
+        );
+    }
+
+    #[test]
+    fn rejects_zip_slip_and_files_outside_the_release_root() {
+        for unsafe_name in [
+            "../outside.txt",
+            "SMAPI 4.5.2 installer/../../outside.txt",
+            "another root/file.txt",
+            r"SMAPI 4.5.2 installer\outside.txt",
+        ] {
+            let temporary = TestDirectory::new();
+            let downloaded = write_test_archive(temporary.path(), &[(unsafe_name, b"bad")]);
+            let destination = temporary.path().join("extract");
+            std::fs::create_dir(&destination).unwrap();
+            assert!(extract_installer_archive(
+                Path::new(&downloaded.path),
+                &destination,
+                &downloaded,
+                SmapiPlatform::Windows,
+                EXTRACTION_LIMITS,
+            )
+            .is_err());
+            assert!(!temporary.path().join("outside.txt").exists());
+        }
+    }
+
+    #[test]
+    fn enforces_extraction_limits_and_rejects_special_entries() {
+        let temporary = TestDirectory::new();
+        let downloaded = write_test_archive(temporary.path(), &valid_windows_archive_entries());
+        let destination = temporary.path().join("extract");
+        std::fs::create_dir(&destination).unwrap();
+        let tiny_limits = ExtractionLimits {
+            max_entries: 32,
+            max_file_size: 4,
+            max_total_size: 64,
+        };
+        assert!(extract_installer_archive(
+            Path::new(&downloaded.path),
+            &destination,
+            &downloaded,
+            SmapiPlatform::Windows,
+            tiny_limits,
+        )
+        .is_err());
+
+        assert!(validate_archive_entry_type(false, true, Some(0o120_777)).is_err());
+        assert!(validate_archive_entry_type(false, false, Some(0o010_644)).is_err());
+        assert!(validate_archive_entry_type(false, false, Some(0o100_644)).is_ok());
+    }
+
+    #[test]
+    fn rechecks_the_cached_archive_hash_before_extraction() {
+        let temporary = TestDirectory::new();
+        let mut downloaded = write_test_archive(temporary.path(), &valid_windows_archive_entries());
+        downloaded.sha256 = "0".repeat(64);
+        let destination = temporary.path().join("extract");
+        std::fs::create_dir(&destination).unwrap();
+        assert!(extract_installer_archive(
+            Path::new(&downloaded.path),
+            &destination,
+            &downloaded,
+            SmapiPlatform::Windows,
+            EXTRACTION_LIMITS,
+        )
+        .is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn quotes_windows_installer_arguments_without_shell_parsing() {
+        let arguments = [
+            OsStr::new("--install"),
+            OsStr::new("--game-path"),
+            OsStr::new(r"D:\Games\Stardew Valley"),
+            OsStr::new("--no-prompt"),
+        ];
+        let command = windows_command_line(
+            OsStr::new(r"C:\SMAPI Installer\SMAPI.Installer.exe"),
+            &arguments,
+        )
+        .unwrap();
+        let command = String::from_utf16(&command[..command.len() - 1]).unwrap();
+        assert_eq!(
+            command,
+            r#""C:\SMAPI Installer\SMAPI.Installer.exe" "--install" "--game-path" "D:\Games\Stardew Valley" "--no-prompt""#
+        );
+
+        let mut quoted = Vec::new();
+        append_quoted_windows_argument(&mut quoted, OsStr::new(r#"a\b"c\"#)).unwrap();
+        assert_eq!(String::from_utf16(&quoted).unwrap(), r#""a\b\"c\\""#);
     }
 }
