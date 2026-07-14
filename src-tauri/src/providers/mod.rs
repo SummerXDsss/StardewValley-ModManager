@@ -8,7 +8,10 @@ use std::{process::Command, sync::Mutex};
 
 use keyring::Entry;
 
-use crate::models::RemoteMod;
+use crate::models::{
+    RemoteMod, RemoteModSearchIssue, RemoteModSearchIssueKind, RemoteModSearchResult,
+    RemoteModSearchSource, SearchRemoteModsRequest,
+};
 
 static KEYRING_ENTRY_INIT_LOCK: Mutex<()> = Mutex::new(());
 
@@ -38,6 +41,90 @@ pub async fn discover() -> Result<Vec<RemoteMod>, String> {
         Err(errors.join("；"))
     } else {
         Ok(mods)
+    }
+}
+
+pub async fn search(request: SearchRemoteModsRequest) -> Result<RemoteModSearchResult, String> {
+    let query = normalize_search_query(&request.query)?;
+    let mut mods = Vec::new();
+    let mut issues = Vec::new();
+
+    match request.source {
+        RemoteModSearchSource::All => {
+            let (nexus_result, github_result) =
+                tokio::join!(nexus::search(&query), github::search(&query));
+            let nexus_succeeded =
+                collect_search_result(&mut mods, &mut issues, "Nexus Mods", nexus_result);
+            collect_search_result(&mut mods, &mut issues, "GitHub", github_result);
+            if nexus_succeeded {
+                issues.push(nexus_search_scope_notice());
+            }
+        }
+        RemoteModSearchSource::Nexus => {
+            let nexus_succeeded = collect_search_result(
+                &mut mods,
+                &mut issues,
+                "Nexus Mods",
+                nexus::search(&query).await,
+            );
+            if nexus_succeeded {
+                issues.push(nexus_search_scope_notice());
+            }
+        }
+        RemoteModSearchSource::Github => {
+            collect_search_result(
+                &mut mods,
+                &mut issues,
+                "GitHub",
+                github::search(&query).await,
+            );
+        }
+    }
+
+    Ok(RemoteModSearchResult { mods, issues })
+}
+
+fn normalize_search_query(value: &str) -> Result<String, String> {
+    let query = value.trim();
+    if query.is_empty() {
+        return Err("请输入要搜索的 Mod 名称、作者或功能".into());
+    }
+    if query.chars().count() > 100 {
+        return Err("搜索内容不能超过 100 个字符".into());
+    }
+    if query.chars().any(char::is_control) {
+        return Err("搜索内容不能包含控制字符".into());
+    }
+    Ok(query.to_string())
+}
+
+fn collect_search_result(
+    mods: &mut Vec<RemoteMod>,
+    issues: &mut Vec<RemoteModSearchIssue>,
+    source: &str,
+    result: Result<Vec<RemoteMod>, String>,
+) -> bool {
+    match result {
+        Ok(items) => {
+            mods.extend(items);
+            true
+        }
+        Err(message) => {
+            issues.push(RemoteModSearchIssue {
+                source: source.into(),
+                kind: RemoteModSearchIssueKind::Error,
+                message,
+            });
+            false
+        }
+    }
+}
+
+fn nexus_search_scope_notice() -> RemoteModSearchIssue {
+    RemoteModSearchIssue {
+        source: "Nexus Mods".into(),
+        kind: RemoteModSearchIssueKind::Warning,
+        message: "Nexus 官方公开 API 没有全站关键词搜索端点；当前结果来自官方热门、最近更新和最近新增列表中的匹配项。".into(),
     }
 }
 
@@ -76,6 +163,19 @@ pub fn open_remote_url(value: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::normalize_search_query;
+
+    #[test]
+    fn search_query_is_trimmed_and_bounded() {
+        assert_eq!(
+            normalize_search_query("  content patcher  ").unwrap(),
+            "content patcher"
+        );
+        assert!(normalize_search_query("   ").is_err());
+        assert!(normalize_search_query(&"a".repeat(101)).is_err());
+        assert!(normalize_search_query("tractor\nmod").is_err());
+    }
+
     #[tokio::test]
     #[ignore = "requires live upstream network access"]
     async fn discovers_live_mods_from_official_apis() {

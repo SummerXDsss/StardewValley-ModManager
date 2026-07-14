@@ -13,9 +13,15 @@ export interface SmapiStatus {
   executable?: string;
 }
 
+export interface SteamStatus {
+  running: boolean;
+}
+
 export interface InstalledMod {
   id: string;
   name: string;
+  description?: string;
+  translated: boolean;
   author: string;
   version: string;
   path: string;
@@ -69,6 +75,25 @@ export interface RemoteMod {
   downloadUrl?: string;
   imageUrl?: string;
   providerId?: string;
+  translated?: boolean;
+}
+
+export type RemoteModSearchSource = "all" | "nexus" | "github";
+
+export interface SearchRemoteModsRequest {
+  query: string;
+  source: RemoteModSearchSource;
+}
+
+export interface RemoteModSearchIssue {
+  source: string;
+  kind: "warning" | "error";
+  message: string;
+}
+
+export interface RemoteModSearchResult {
+  mods: RemoteMod[];
+  issues: RemoteModSearchIssue[];
 }
 
 export interface NexusAuthStatus {
@@ -105,6 +130,12 @@ export interface NexusFileVersion {
 export interface DownloadedModFile {
   path: string;
   fileName: string;
+  metadataPath?: string;
+}
+
+export interface DownloadedModTranslation {
+  name: string;
+  description: string;
 }
 
 export type SmapiPlatform = "windows" | "macos" | "linux";
@@ -181,8 +212,22 @@ export interface AiTranslationModel {
   ownedBy?: string | null;
 }
 
+export interface AiTranslationRequestMetadata {
+  method: string;
+  endpoint: string;
+  body?: string | null;
+}
+
+export interface AiTranslationResponseMetadata {
+  status: number;
+  summary: string;
+  content?: string | null;
+}
+
 export interface AiTranslationModelList {
   models: AiTranslationModel[];
+  request: AiTranslationRequestMetadata;
+  response: AiTranslationResponseMetadata;
 }
 
 export interface TestAiTranslationConnectionRequest {
@@ -194,6 +239,8 @@ export interface TestAiTranslationConnectionRequest {
 export interface AiTranslationConnectionTestResult {
   modelId: string;
   message: string;
+  request: AiTranslationRequestMetadata;
+  response: AiTranslationResponseMetadata;
 }
 
 export interface TranslateModResult {

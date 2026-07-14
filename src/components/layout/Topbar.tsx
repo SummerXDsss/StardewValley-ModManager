@@ -1,4 +1,4 @@
-import { Button, Checkbox, Dropdown, Popover, Space, Tooltip } from "antd";
+import { Button, Checkbox, Dropdown, Popover, Space, Tag, Tooltip } from "antd";
 import type { MenuProps } from "antd";
 import {
   DownOutlined,
@@ -10,13 +10,19 @@ import {
   ThunderboltOutlined,
 } from "@ant-design/icons";
 import type { LaunchPreference } from "../../hooks";
-import type { GameProcessStatus } from "../../types";
+import type { GameProcessStatus, SmapiStatus } from "../../types";
 import { formatDisplayPath } from "../../utils/path";
 
 export type GameProcessAction = "launching" | "stopping" | "restarting" | null;
 
 interface TopbarProps {
   gamePath?: string;
+  smapi?: SmapiStatus;
+  smapiLoading: boolean;
+  smapiError?: string;
+  steamRunning: boolean;
+  steamLoading: boolean;
+  steamError?: string;
   rememberLaunch: boolean;
   onRememberLaunchChange: (checked: boolean) => void;
   onLaunch: (choice: LaunchPreference) => void;
@@ -32,6 +38,12 @@ interface TopbarProps {
 
 export function Topbar({
   gamePath,
+  smapi,
+  smapiLoading,
+  smapiError,
+  steamRunning,
+  steamLoading,
+  steamError,
   rememberLaunch,
   onRememberLaunchChange,
   onLaunch,
@@ -103,20 +115,77 @@ export function Topbar({
       设置游戏路径
     </Button>
   );
+  const displayPath = gamePath ? formatDisplayPath(gamePath) : "";
+  const pathSummary = displayPath.length > 6
+    ? `${Array.from(displayPath).slice(0, 6).join("")}...`
+    : displayPath;
+  const steamLabel = steamLoading
+    ? "Steam 检查中"
+    : steamError
+      ? "Steam 未知"
+      : steamRunning
+        ? "Steam 运行中"
+        : "Steam 未运行";
+  const steamTone = steamLoading
+    ? "checking"
+    : steamError
+      ? "unknown"
+      : steamRunning
+        ? "running"
+        : "stopped";
+  const smapiLabel = smapi
+    ? smapi.installed
+      ? `SMAPI ${smapi.version ?? "已安装"}`
+      : "SMAPI 未安装"
+    : smapiLoading
+      ? "SMAPI 检查中"
+      : "SMAPI 未知";
+  const smapiColor = smapi?.installed ? "green" : smapiLoading ? "processing" : undefined;
 
   return (
     <header className="topbar">
-      <Popover title="游戏目录" content={pathPopover} trigger="click" placement="bottomLeft">
-        <button
-          className={`path-chip ${gamePath ? "ready" : "missing"}`}
-          type="button"
-          aria-label={gamePath ? "游戏路径已获取，点击查看或修改" : "需要设置游戏路径"}
+      <div className="topbar-environment">
+        <Popover title="游戏目录" content={pathPopover} trigger="click" placement="bottomLeft">
+          <button
+            className={`path-chip ${gamePath ? "ready" : "missing"}`}
+            type="button"
+            aria-label={gamePath ? "查看完整游戏路径" : "需要设置游戏路径"}
+          >
+            <FolderOpenOutlined />
+            <span className="path-chip-label">{gamePath ? pathSummary : "未设置路径"}</span>
+            <DownOutlined className="path-chip-arrow" />
+          </button>
+        </Popover>
+        <Tooltip title="修改游戏路径">
+          <Button
+            className="path-edit-button"
+            type="text"
+            icon={<EditOutlined />}
+            aria-label="修改游戏路径"
+            onClick={onEditGamePath}
+          />
+        </Tooltip>
+        <Tooltip
+          title={steamError
+            ? `Steam 状态获取失败：${steamError}`
+            : "根据本机 Steam 主进程判断，不代表账号的网络连接模式"}
         >
-          <FolderOpenOutlined />
-          <span className="path-chip-label">{gamePath ? "游戏路径已获取" : "需要设置游戏路径"}</span>
-          <DownOutlined className="path-chip-arrow" />
-        </button>
-      </Popover>
+          <span
+            className={`steam-runtime-status ${steamTone}`}
+            role="status"
+            aria-label={steamLabel}
+            tabIndex={0}
+          >
+            <i aria-hidden="true" />
+            <span className="steam-runtime-label">{steamLabel}</span>
+          </span>
+        </Tooltip>
+        <Tooltip title={smapiError ? `SMAPI 状态获取失败：${smapiError}` : undefined}>
+          <Tag color={smapiColor} className="smapi-version-tag">
+            {smapiLabel}
+          </Tag>
+        </Tooltip>
+      </div>
       <div className="game-process-controls">
         <Tooltip title={monitorError ? `最近一次状态检查失败：${monitorError}` : statusDetail}>
           <div className={`game-process-status ${statusTone}`} role="status" aria-live="polite">

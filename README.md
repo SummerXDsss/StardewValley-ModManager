@@ -22,6 +22,7 @@ Valley Steward 是一个面向《星露谷物语》PC 玩家的轻量 Mod 管理
 - 可选择“记住上次选择”，下次继续使用相同启动模式；
 - 启动后持续监测由管理器创建的游戏进程，并显示运行状态；
 - 运行期间可一键关闭或重启游戏；重启复用本次启动模式、Mods 路径和附加参数；
+- 顶部状态栏集中显示游戏路径摘要与编辑入口、Steam 进程状态、SMAPI 实际版本和游戏启停操作；
 - SMAPI 未安装时打开官方获取页面。
 
 ### Mod 管理
@@ -31,6 +32,8 @@ Valley Steward 是一个面向《星露谷物语》PC 玩家的轻量 Mod 管理
 - 搜索、筛选、启用和禁用 Mod；
 - 打开 Mod 所在目录；
 - 删除时先移动到 `.mod-manager-trash`，避免直接永久删除；
+- 已安装 Mod 的名称与简介可逐项并行翻译，译文按 Mod 目录写入管理器专用 sidecar，不修改第三方 `manifest.json`；
+- 简介默认收起为两行，可按项展开或收起，避免窗口缩放时列表高度跳动；
 - 无效清单单独标记，不阻断其他 Mod 扫描。
 
 ### 发现 Mod
@@ -40,10 +43,14 @@ Valley Steward 是一个面向《星露谷物语》PC 玩家的轻量 Mod 管理
 - 配置 Key 后合并 Nexus 趋势、最新更新和最新发布列表；
 - 读取 Nexus Mod 详情、文件组、版本、类别和上传时间；
 - 通过官方下载链接接口流式下载发布包到应用缓存；
-- GitHub Search 与 Releases 官方 API；
+- GitHub Search 与 Releases 官方 API，可从搜索框向 GitHub 发起真实仓库搜索；
+- Nexus 搜索会实时请求官方趋势、最新更新和最新发布三个列表后在返回范围内匹配，并在界面明确提示搜索范围；
 - 聚合搜索、来源筛选、缩略图、版本和热度；
 - GitHub Release 存在 `.zip` 或 `.7z` 发布包时提供直接下载入口；
-- 支持用户配置 HTTP/HTTPS OpenAI-compatible Base URL、Model ID 和 API Key；可读取 `/models` 列表、发送最小测试请求，并一键翻译 Mod 名称与简介；
+- 支持用户配置 HTTP/HTTPS OpenAI-compatible Base URL、Model ID 和 API Key；可读取 `/models` 列表并直接选择模型、发送最小测试请求，并一键翻译 Mod 名称与简介；
+- 翻译请求固定包含“适配游戏 星露谷物语”的上下文；远程与已安装 Mod 可逐项并行翻译，互不阻塞；
+- 设置页展示规范化后的请求地址、脱敏请求内容、响应摘要与响应内容，便于诊断兼容接口；
+- Nexus 下载会把当前翻译结果写入下载缓存旁的管理器专用 sidecar，供后续安装流程复用；
 - 仅允许打开受信任上游域名的 HTTPS 链接；
 - Rust provider 缓存上游结果 15 分钟，降低限流风险。
 

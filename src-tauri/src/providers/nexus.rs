@@ -1,7 +1,12 @@
 use std::{
     collections::HashSet,
+    fs::{self, OpenOptions},
+    io::{ErrorKind, Write},
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex, OnceLock,
+    },
     time::{Duration, Instant},
 };
 
@@ -11,16 +16,18 @@ use reqwest::{
     redirect::Policy,
     Client, Response, StatusCode,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use crate::models::{
-    DownloadedModFile, NexusAuthStatus, NexusFileVersion, NexusModDetails, NexusModFile, RemoteMod,
+    DownloadedModFile, DownloadedModTranslation, NexusAuthStatus, NexusFileVersion,
+    NexusModDetails, NexusModFile, RemoteMod,
 };
 
 const API_BASE: &str = "https://api.nexusmods.com/v3";
 const LEGACY_API_BASE: &str = "https://api.nexusmods.com/v1";
 const TRENDING_URL: &str = "https://api.nexusmods.com/v3/games/stardewvalley/trending-mods";
+const SEARCH_LIST_ENDPOINTS: [&str; 3] = ["trending", "latest_updated", "latest_added"];
 const CACHE_TTL: Duration = Duration::from_secs(15 * 60);
 const KEYRING_SERVICE: &str = "com.summerxdsss.valleysteward";
 const KEYRING_USER: &str = "nexus-api-key";
@@ -31,10 +38,15 @@ const MAX_PROVIDER_ERROR_CHARS: usize = 300;
 const RECENT_WRITE_WINDOW: Duration = Duration::from_secs(2);
 const CREDENTIAL_READ_RETRY_DELAY: Duration = Duration::from_millis(40);
 const CREDENTIAL_READ_RETRIES: usize = 3;
+const MAX_TRANSLATED_NAME_CHARS: usize = 512;
+const MAX_TRANSLATED_DESCRIPTION_CHARS: usize = 16_000;
+const MAX_SIDECAR_TEMP_FILE_ATTEMPTS: usize = 32;
 
 static CACHE: OnceLock<Mutex<Option<CachedMods>>> = OnceLock::new();
 static KEYRING_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static LAST_KEYRING_WRITE: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+static SIDECAR_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static SIDECAR_TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 struct CachedMods {
@@ -111,6 +123,17 @@ struct NexusApiError {
     message: Option<String>,
     #[serde(default)]
     error: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadTranslationSidecar<'a> {
+    schema_version: u8,
+    provider: &'static str,
+    mod_id: &'a str,
+    file_id: &'a str,
+    name: &'a str,
+    description: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -201,6 +224,30 @@ pub async fn discover() -> Result<Vec<RemoteMod>, String> {
             mods: mods.clone(),
         });
     }
+    Ok(mods)
+}
+
+pub async fn search(query: &str) -> Result<Vec<RemoteMod>, String> {
+    let client = authenticated_client().map_err(|error| format!("无法搜索 Nexus Mods：{error}"))?;
+    let mut mods = Vec::new();
+
+    for endpoint in SEARCH_LIST_ENDPOINTS {
+        let items = get_json::<Vec<LegacyMod>>(
+            &client,
+            &format!("{LEGACY_API_BASE}/games/stardewvalley/mods/{endpoint}.json"),
+        )
+        .await
+        .map_err(|error| format!("Nexus Mods {endpoint} 列表搜索失败：{error}"))?;
+        mods.extend(items.into_iter().map(legacy_remote_mod));
+    }
+
+    let mut seen = HashSet::new();
+    mods.retain(|item| {
+        item.provider_id
+            .as_ref()
+            .is_none_or(|provider_id| seen.insert(provider_id.clone()))
+            && remote_mod_matches(item, query)
+    });
     Ok(mods)
 }
 
@@ -300,6 +347,7 @@ pub async fn download_file(
     cache_dir: &Path,
     mod_id: &str,
     file_id: &str,
+    translation: Option<DownloadedModTranslation>,
 ) -> Result<DownloadedModFile, String> {
     validate_numeric_id(mod_id, "Mod ID")?;
     validate_numeric_id(file_id, "文件 ID")?;
@@ -352,11 +400,162 @@ pub async fn download_file(
     file.flush()
         .await
         .map_err(|error| format!("无法保存下载文件：{error}"))?;
+    let metadata_path = match translation {
+        Some(translation) => {
+            let (name, description) = normalize_download_translation(&translation)?;
+            let metadata_path =
+                downloads_dir.join(format!("nexus-{mod_id}-{file_id}.valley-steward.json"));
+            let content = serde_json::to_vec_pretty(&DownloadTranslationSidecar {
+                schema_version: 1,
+                provider: "Nexus Mods",
+                mod_id,
+                file_id,
+                name,
+                description,
+            })
+            .map_err(|error| format!("无法序列化下载翻译元数据：{error}"))?;
+            write_download_translation_sidecar_atomic(&downloads_dir, &metadata_path, &content)
+                .map_err(|error| format!("Mod 已下载，但无法保存翻译元数据：{error}"))?;
+            Some(metadata_path.to_string_lossy().into_owned())
+        }
+        None => None,
+    };
     Ok(DownloadedModFile {
         path: target.to_string_lossy().into_owned(),
         file_name,
+        metadata_path,
     })
 }
+
+fn normalize_download_translation(
+    translation: &DownloadedModTranslation,
+) -> Result<(&str, &str), String> {
+    let name = translation.name.trim();
+    let description = translation.description.trim();
+    if name.is_empty() || name.chars().count() > MAX_TRANSLATED_NAME_CHARS {
+        return Err("下载译名为空或过长".into());
+    }
+    if description.is_empty() || description.chars().count() > MAX_TRANSLATED_DESCRIPTION_CHARS {
+        return Err("下载译文为空或过长".into());
+    }
+    if name.chars().any(char::is_control)
+        || description
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return Err("下载翻译元数据包含无效控制字符".into());
+    }
+    Ok((name, description))
+}
+
+fn write_download_translation_sidecar_atomic(
+    directory: &Path,
+    target: &Path,
+    content: &[u8],
+) -> Result<(), String> {
+    let _guard = SIDECAR_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "下载翻译元数据写入锁已损坏".to_string())?;
+    if target.parent() != Some(directory) {
+        return Err("翻译元数据路径无效".into());
+    }
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            return Err("拒绝覆盖不是普通文件的下载翻译元数据".into());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("无法检查下载翻译元数据：{error}")),
+    }
+
+    let mut last_collision = None;
+    for _ in 0..MAX_SIDECAR_TEMP_FILE_ATTEMPTS {
+        let sequence = SIDECAR_TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temporary = directory.join(format!(
+            ".valley-steward-nexus-translation-{}-{sequence}.tmp",
+            std::process::id()
+        ));
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                last_collision = Some(error);
+                continue;
+            }
+            Err(error) => return Err(format!("无法创建下载翻译临时文件：{error}")),
+        };
+
+        let write_result = file.write_all(content).and_then(|()| file.sync_all());
+        drop(file);
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("无法写入下载翻译临时文件：{error}"));
+        }
+        if let Err(error) = atomic_replace_sidecar(&temporary, target) {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("无法原子替换下载翻译元数据：{error}"));
+        }
+        sync_sidecar_parent_directory(directory);
+        return Ok(());
+    }
+
+    Err(format!(
+        "无法创建唯一的下载翻译临时文件：{}",
+        last_collision
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "文件名冲突".into())
+    ))
+}
+
+#[cfg(windows)]
+fn atomic_replace_sidecar(source: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn atomic_replace_sidecar(source: &Path, target: &Path) -> std::io::Result<()> {
+    fs::rename(source, target)
+}
+
+#[cfg(unix)]
+fn sync_sidecar_parent_directory(directory: &Path) {
+    if let Ok(file) = fs::File::open(directory) {
+        let _ = file.sync_all();
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_sidecar_parent_directory(_directory: &Path) {}
 
 fn public_client() -> Result<Client, String> {
     Client::builder()
@@ -653,6 +852,13 @@ fn legacy_remote_mod(item: LegacyMod) -> RemoteMod {
     }
 }
 
+fn remote_mod_matches(item: &RemoteMod, query: &str) -> bool {
+    let needle = query.to_lowercase();
+    [&item.name, &item.author, &item.summary]
+        .iter()
+        .any(|value| value.to_lowercase().contains(&needle))
+}
+
 fn file_name_from_content_disposition(value: &str) -> Option<String> {
     value
         .split(';')
@@ -678,7 +884,10 @@ fn cached_mods() -> Option<Vec<RemoteMod>> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        sync::{Arc, Barrier},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use super::*;
 
@@ -705,6 +914,95 @@ mod tests {
         assert!(error.contains("Personal API Key"));
         assert!(error.contains("Bearer JWT"));
         assert!(error.contains("HTTP 401"));
+    }
+
+    #[test]
+    fn download_translation_metadata_is_bounded_and_trimmed() {
+        let translation = DownloadedModTranslation {
+            name: "  洒水器助手  ".into(),
+            description: "  自动照料农场。  ".into(),
+        };
+        assert_eq!(
+            normalize_download_translation(&translation).unwrap(),
+            ("洒水器助手", "自动照料农场。")
+        );
+
+        let invalid = DownloadedModTranslation {
+            name: "无效\0名称".into(),
+            description: "译文".into(),
+        };
+        assert!(normalize_download_translation(&invalid).is_err());
+    }
+
+    #[test]
+    fn concurrent_sidecar_writes_are_atomic_and_leave_no_temporary_files() {
+        const WRITER_COUNT: usize = 8;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "valley-steward-nexus-sidecar-test-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let target = directory.join("nexus-1-2.valley-steward.json");
+        let barrier = Arc::new(Barrier::new(WRITER_COUNT));
+        let payloads = (0..WRITER_COUNT)
+            .map(|index| format!(r#"{{"writer":{index},"description":"译文 {index}"}}"#))
+            .collect::<Vec<_>>();
+
+        std::thread::scope(|scope| {
+            for payload in &payloads {
+                let barrier = Arc::clone(&barrier);
+                let directory = &directory;
+                let target = &target;
+                scope.spawn(move || {
+                    barrier.wait();
+                    write_download_translation_sidecar_atomic(
+                        directory,
+                        target,
+                        payload.as_bytes(),
+                    )
+                    .unwrap();
+                });
+            }
+        });
+
+        let saved = fs::read_to_string(&target).unwrap();
+        assert!(payloads.contains(&saved));
+        let leftovers = fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn nexus_list_search_matches_name_author_and_summary_case_insensitively() {
+        let item = RemoteMod {
+            id: "nexus:1".into(),
+            name: "Content Patcher".into(),
+            author: "Pathoschild".into(),
+            summary: "Loads content packs without replacing files".into(),
+            source: "Nexus Mods".into(),
+            version: "2.0".into(),
+            popularity: "100 下载".into(),
+            compatibility: "查看发布说明".into(),
+            updated_at: "2026-01-01".into(),
+            page_url: "https://www.nexusmods.com/stardewvalley/mods/1".into(),
+            download_url: None,
+            image_url: None,
+            provider_id: Some("1".into()),
+        };
+
+        assert!(remote_mod_matches(&item, "PATCHER"));
+        assert!(remote_mod_matches(&item, "pathos"));
+        assert!(remote_mod_matches(&item, "content packs"));
+        assert!(!remote_mod_matches(&item, "tractor"));
     }
 
     #[test]

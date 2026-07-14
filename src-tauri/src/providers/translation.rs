@@ -20,6 +20,7 @@ const MAX_CONFIG_BYTES: usize = 8 * 1024;
 const MAX_BASE_URL_BYTES: usize = 2_048;
 const MAX_MODEL_ID_CHARS: usize = 256;
 const MAX_API_KEY_BYTES: usize = 2_048;
+const MIN_API_KEY_REDACTION_BYTES: usize = 8;
 const MAX_NAME_CHARS: usize = 512;
 const MAX_SUMMARY_CHARS: usize = 12_000;
 const MAX_TRANSLATED_SUMMARY_CHARS: usize = 16_000;
@@ -71,8 +72,26 @@ pub struct AiTranslationModel {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct AiTranslationRequestMetadata {
+    pub method: String,
+    pub endpoint: String,
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiTranslationResponseMetadata {
+    pub status: u16,
+    pub summary: String,
+    pub content: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct AiTranslationModelList {
     pub models: Vec<AiTranslationModel>,
+    pub request: AiTranslationRequestMetadata,
+    pub response: AiTranslationResponseMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,6 +108,8 @@ pub struct TestAiTranslationConnectionRequest {
 pub struct AiTranslationConnectionTestResult {
     pub model_id: String,
     pub message: String,
+    pub request: AiTranslationRequestMetadata,
+    pub response: AiTranslationResponseMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -291,6 +312,7 @@ pub async fn list_models(
     let base_url = normalize_base_url(&request.base_url)?;
     let api_key = resolve_request_api_key(config_dir, &base_url, request.api_key.as_deref())?;
     let endpoint = models_endpoint(&base_url)?;
+    let request_metadata = ai_request_metadata("GET", &endpoint, None, &api_key);
     let response = provider_client()?
         .get(endpoint)
         .header(ACCEPT, "application/json")
@@ -298,6 +320,7 @@ pub async fn list_models(
         .send()
         .await
         .map_err(|error| format!("获取 AI 模型列表失败：{error}"))?;
+    let response_status = response.status();
     let body = read_provider_response(response, &api_key).await?;
     let response: ModelListResponse =
         serde_json::from_slice(&body).map_err(|_| "AI 模型列表响应格式无效".to_string())?;
@@ -310,7 +333,7 @@ pub async fn list_models(
     for item in response.data {
         let id = normalize_model_id(&item.id)
             .map_err(|error| format!("AI 服务返回了无效 Model ID：{error}"))?;
-        if id == api_key || (api_key.len() >= 8 && id.contains(&api_key)) {
+        if contains_sensitive_api_key(&id, &api_key) {
             return Err("AI 服务返回了不安全的 Model ID".into());
         }
         if !seen.insert(id.clone()) {
@@ -321,18 +344,24 @@ pub async fn list_models(
             "模型所有者",
             MAX_MODEL_OWNER_CHARS,
         )?
-        .map(|value| {
-            if value == api_key || api_key.len() >= 8 {
-                value.replace(&api_key, "[已隐藏]")
-            } else {
-                value
-            }
-        });
+        .map(|value| redact_api_key(&value, &api_key));
         models.push(AiTranslationModel { id, owned_by });
     }
     models.sort_unstable_by(|left, right| left.id.cmp(&right.id));
+    let response_content = serde_json::to_string_pretty(&models)
+        .map_err(|error| format!("无法生成 AI 模型列表摘要：{error}"))?;
+    let response_metadata = ai_response_metadata(
+        response_status.as_u16(),
+        format!("{response_status} · 已获取 {} 个模型", models.len()),
+        Some(response_content),
+        &api_key,
+    );
 
-    Ok(AiTranslationModelList { models })
+    Ok(AiTranslationModelList {
+        models,
+        request: request_metadata,
+        response: response_metadata,
+    })
 }
 
 pub async fn test_connection(
@@ -342,6 +371,9 @@ pub async fn test_connection(
     let base_url = normalize_base_url(&request.base_url)?;
     let model_id = normalize_model_id(&request.model_id)?;
     let api_key = resolve_request_api_key(config_dir, &base_url, request.api_key.as_deref())?;
+    if contains_sensitive_api_key(&model_id, &api_key) {
+        return Err("Model ID 不能包含 API Key".into());
+    }
     let endpoint = completion_endpoint(&base_url)?;
     let payload = ChatConnectionTestRequest {
         model: &model_id,
@@ -351,6 +383,9 @@ pub async fn test_connection(
         }],
         max_tokens: 16,
     };
+    let request_body = serde_json::to_string_pretty(&payload)
+        .map_err(|error| format!("无法构造 AI 连接测试请求：{error}"))?;
+    let request_metadata = ai_request_metadata("POST", &endpoint, Some(request_body), &api_key);
     let response = provider_client()?
         .post(endpoint)
         .header(ACCEPT, "application/json")
@@ -359,6 +394,7 @@ pub async fn test_connection(
         .send()
         .await
         .map_err(|error| format!("AI 连接测试失败：{error}"))?;
+    let response_status = response.status();
     let body = read_provider_response(response, &api_key).await?;
     let response: ChatCompletionResponse =
         serde_json::from_slice(&body).map_err(|_| "AI 连接测试响应格式无效".to_string())?;
@@ -371,10 +407,21 @@ pub async fn test_connection(
         .content
         .ok_or_else(|| "AI 连接测试返回了空消息".to_string())?;
     let message = chat_content_as_text(content)?;
-    let message = message.replace(&api_key, "[已隐藏]");
+    let message = redact_api_key(&message, &api_key);
     let message = normalize_text(&message, "AI 连接测试消息", MAX_TEST_MESSAGE_CHARS)?;
+    let response_metadata = ai_response_metadata(
+        response_status.as_u16(),
+        format!("{response_status} · 已收到连接测试回复"),
+        Some(message.clone()),
+        &api_key,
+    );
 
-    Ok(AiTranslationConnectionTestResult { model_id, message })
+    Ok(AiTranslationConnectionTestResult {
+        model_id,
+        message,
+        request: request_metadata,
+        response: response_metadata,
+    })
 }
 
 async fn send_translation(
@@ -472,6 +519,44 @@ fn provider_endpoint(base_url: &str, relative_path: &str) -> Result<Url, String>
     Url::parse(&normalized)
         .and_then(|url| url.join(relative_path))
         .map_err(|_| "无法构造 AI 服务接口地址".to_string())
+}
+
+fn ai_request_metadata(
+    method: &str,
+    endpoint: &Url,
+    body: Option<String>,
+    api_key: &str,
+) -> AiTranslationRequestMetadata {
+    AiTranslationRequestMetadata {
+        method: method.to_string(),
+        endpoint: redact_api_key(endpoint.as_str(), api_key),
+        body: body.map(|value| redact_api_key(&value, api_key)),
+    }
+}
+
+fn ai_response_metadata(
+    status: u16,
+    summary: String,
+    content: Option<String>,
+    api_key: &str,
+) -> AiTranslationResponseMetadata {
+    AiTranslationResponseMetadata {
+        status,
+        summary: redact_api_key(&summary, api_key),
+        content: content.map(|value| redact_api_key(&value, api_key)),
+    }
+}
+
+fn redact_api_key(value: &str, api_key: &str) -> String {
+    if contains_sensitive_api_key(value, api_key) {
+        value.replace(api_key, "[已隐藏]")
+    } else {
+        value.to_string()
+    }
+}
+
+fn contains_sensitive_api_key(value: &str, api_key: &str) -> bool {
+    value == api_key || (api_key.len() >= MIN_API_KEY_REDACTION_BYTES && value.contains(api_key))
 }
 
 fn same_base_url_origin(left: &str, right: &str) -> Result<bool, String> {
@@ -672,7 +757,7 @@ fn provider_error_message(body: &[u8], api_key: &str) -> Option<String> {
         .pointer("/error/message")
         .or_else(|| value.get("message"))?
         .as_str()?;
-    let redacted = message.replace(api_key, "[已隐藏]");
+    let redacted = redact_api_key(message, api_key);
     let sanitized = redacted
         .chars()
         .map(|character| {
@@ -924,6 +1009,33 @@ mod tests {
     }
 
     #[test]
+    fn short_api_keys_do_not_corrupt_models_or_request_metadata() {
+        let endpoint = Url::parse("https://api.example/v1/chat/completions").unwrap();
+        let metadata = ai_request_metadata(
+            "POST",
+            &endpoint,
+            Some(r#"{"model":"alpha-model"}"#.into()),
+            "a",
+        );
+
+        assert_eq!(metadata.endpoint, endpoint.as_str());
+        assert_eq!(metadata.body.as_deref(), Some(r#"{"model":"alpha-model"}"#));
+        assert!(!contains_sensitive_api_key("alpha-model", "a"));
+        assert_eq!(redact_api_key("alpha-model", "a"), "alpha-model");
+        assert_eq!(redact_api_key("a", "a"), "[已隐藏]");
+
+        let regular_key = "test-key-123";
+        assert!(contains_sensitive_api_key(
+            "model-test-key-123",
+            regular_key
+        ));
+        assert_eq!(
+            redact_api_key("provider test-key-123", regular_key),
+            "provider [已隐藏]"
+        );
+    }
+
+    #[test]
     fn writes_and_revalidates_non_secret_configuration() {
         let directory = unique_temp_directory();
         let config = StoredTranslationConfig {
@@ -992,7 +1104,7 @@ mod tests {
             "object": "list",
             "data": [
                 {"id": "zeta-model", "owned_by": "provider"},
-                {"id": "alpha-model", "owned_by": "provider"},
+                {"id": "alpha-model", "owned_by": "provider test-key-123"},
                 {"id": "zeta-model", "owned_by": "duplicate"}
             ]
         })
@@ -1013,7 +1125,7 @@ mod tests {
             vec![
                 AiTranslationModel {
                     id: "alpha-model".into(),
-                    owned_by: Some("provider".into()),
+                    owned_by: Some("provider [已隐藏]".into()),
                 },
                 AiTranslationModel {
                     id: "zeta-model".into(),
@@ -1021,6 +1133,20 @@ mod tests {
                 },
             ]
         );
+        assert_eq!(result.request.method, "GET");
+        assert!(result.request.endpoint.ends_with("/v1/models"));
+        assert_eq!(result.request.body, None);
+        assert_eq!(result.response.status, 200);
+        assert!(result.response.summary.contains("已获取 2 个模型"));
+        assert!(result
+            .response
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("alpha-model"));
+        let displayed = serde_json::to_string(&result).unwrap();
+        assert!(!displayed.contains("test-key-123"));
+        assert!(!displayed.to_ascii_lowercase().contains("authorization"));
         let raw_request = received.recv_timeout(Duration::from_secs(2)).unwrap();
         server.join().unwrap();
         let headers = raw_request.split_once("\r\n\r\n").unwrap().0;
@@ -1091,6 +1217,23 @@ mod tests {
 
         assert_eq!(result.model_id, "test-model");
         assert_eq!(result.message, "连接成功 [已隐藏]");
+        assert_eq!(result.request.method, "POST");
+        assert!(result.request.endpoint.ends_with("/v1/chat/completions"));
+        let displayed_request: Value =
+            serde_json::from_str(result.request.body.as_deref().unwrap()).unwrap();
+        assert_eq!(displayed_request["model"], "test-model");
+        assert_eq!(
+            displayed_request["messages"][0]["content"],
+            "请只回复：连接成功"
+        );
+        assert_eq!(result.response.status, 200);
+        assert_eq!(
+            result.response.content.as_deref(),
+            Some("连接成功 [已隐藏]")
+        );
+        let displayed = serde_json::to_string(&result).unwrap();
+        assert!(!displayed.contains("test-key-123"));
+        assert!(!displayed.to_ascii_lowercase().contains("authorization"));
         let raw_request = received.recv_timeout(Duration::from_secs(2)).unwrap();
         server.join().unwrap();
         let (headers, body) = raw_request.split_once("\r\n\r\n").unwrap();
@@ -1102,6 +1245,23 @@ mod tests {
         assert_eq!(body["model"], "test-model");
         assert_eq!(body["messages"].as_array().unwrap().len(), 1);
         assert_eq!(body["max_tokens"], 16);
+    }
+
+    #[tokio::test]
+    async fn connection_test_rejects_a_model_id_that_contains_the_api_key() {
+        let error = test_connection(
+            &unique_temp_directory(),
+            TestAiTranslationConnectionRequest {
+                base_url: "https://api.example/v1".into(),
+                model_id: "model-test-key-123".into(),
+                api_key: Some("test-key-123".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error, "Model ID 不能包含 API Key");
+        assert!(!error.contains("test-key-123"));
     }
 
     #[tokio::test]

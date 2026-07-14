@@ -4,8 +4,9 @@ use tauri::Manager;
 
 use crate::{
     models::{
-        Dashboard, DownloadedModFile, GameProcessStatus, LaunchRequest, NexusAuthStatus,
-        NexusModDetails, RemoteMod, SmapiStatus,
+        Dashboard, DownloadedModFile, DownloadedModTranslation, GameProcessStatus, LaunchRequest,
+        NexusAuthStatus, NexusModDetails, RemoteMod, RemoteModSearchResult,
+        SearchRemoteModsRequest, SmapiStatus, SteamStatus,
     },
     providers,
     services::{game, game_process::GameProcessManager, mods},
@@ -41,6 +42,15 @@ pub fn scan_game_path(app: tauri::AppHandle, game_path: String) -> Result<Dashbo
         .map_err(|error| format!("无法确定应用配置目录：{error}"))?;
     let installation = game::inspect_and_save_game(&config_dir, Path::new(&game_path))?;
     Ok(dashboard_for(&installation.path))
+}
+
+#[tauri::command]
+pub async fn get_steam_status() -> Result<SteamStatus, String> {
+    tauri::async_runtime::spawn_blocking(|| SteamStatus {
+        running: game::steam_running(),
+    })
+    .await
+    .map_err(|error| format!("读取 Steam 状态任务失败：{error}"))
 }
 
 #[tauri::command]
@@ -354,6 +364,42 @@ pub async fn translate_mod(
 }
 
 #[tauri::command]
+pub async fn translate_installed_mod(
+    app: tauri::AppHandle,
+    game_path: String,
+    mod_path: String,
+) -> Result<providers::translation::TranslateModResult, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("无法确定应用配置目录：{error}"))?;
+    let source = mods::translation_source(Path::new(&game_path), Path::new(&mod_path))?;
+    let source_summary = if source.description.trim().is_empty() {
+        format!("Stardew Valley Mod: {}", source.name)
+    } else {
+        source.description.clone()
+    };
+    let translated = providers::translation::translate_mod(
+        &config_dir,
+        providers::translation::TranslateModRequest {
+            name: source.name.clone(),
+            summary: source_summary,
+        },
+    )
+    .await?;
+    mods::save_translation(
+        Path::new(&game_path),
+        Path::new(&mod_path),
+        &source,
+        mods::ModTranslation {
+            name: translated.name.clone(),
+            description: translated.summary.clone(),
+        },
+    )?;
+    Ok(translated)
+}
+
+#[tauri::command]
 pub async fn list_ai_translation_models(
     app: tauri::AppHandle,
     request: providers::translation::ListAiTranslationModelsRequest,
@@ -380,6 +426,13 @@ pub async fn test_ai_translation_connection(
 #[tauri::command]
 pub async fn discover_mods() -> Result<Vec<RemoteMod>, String> {
     providers::discover().await
+}
+
+#[tauri::command]
+pub async fn search_remote_mods(
+    request: SearchRemoteModsRequest,
+) -> Result<RemoteModSearchResult, String> {
+    providers::search(request).await
 }
 
 #[tauri::command]
@@ -412,12 +465,13 @@ pub async fn download_nexus_file(
     app: tauri::AppHandle,
     mod_id: String,
     file_id: String,
+    translation: Option<DownloadedModTranslation>,
 ) -> Result<DownloadedModFile, String> {
     let cache_dir = app
         .path()
         .app_cache_dir()
         .map_err(|error| format!("无法确定应用缓存目录：{error}"))?;
-    providers::nexus::download_file(&cache_dir, &mod_id, &file_id).await
+    providers::nexus::download_file(&cache_dir, &mod_id, &file_id, translation).await
 }
 
 #[tauri::command]

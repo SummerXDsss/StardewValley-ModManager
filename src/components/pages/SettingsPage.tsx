@@ -17,8 +17,9 @@ import {
   testAiTranslationConnection,
 } from "../../api";
 import type {
-  AiTranslationConnectionTestResult,
   AiTranslationModel,
+  AiTranslationRequestMetadata,
+  AiTranslationResponseMetadata,
   AiTranslationStatus,
   Dashboard,
   GithubDownloadMode,
@@ -30,8 +31,17 @@ import { formatDisplayPath } from "../../utils/path";
 
 const NEXUS_PERSONAL_API_KEYS_URL = "https://www.nexusmods.com/settings/api-keys";
 const GITHUB_PROXY_PRESET = "https://gh-proxy.com/";
+const TRANSLATION_CONNECTION_TEST_PROMPT = "请只回复：连接成功";
 
 type GithubDownloadChoice = GithubDownloadMode | "gh-proxy";
+type TranslationRequestPhase = "loading" | "success" | "error";
+
+interface TranslationRequestActivity {
+  phase: TranslationRequestPhase;
+  request: AiTranslationRequestMetadata;
+  response?: AiTranslationResponseMetadata;
+  error?: string;
+}
 
 const SMAPI_LAUNCH_ARGUMENT_OPTIONS = [
   { value: "--no-terminal", label: "--no-terminal · 关闭终端输出" },
@@ -60,6 +70,36 @@ function usesPlainHttp(value: string) {
   } catch {
     return false;
   }
+}
+
+function redactTranslationSecret(value: string, apiKey: string) {
+  return apiKey ? value.split(apiKey).join("[已隐藏]") : value;
+}
+
+function translationRequestPreview(
+  baseUrl: string,
+  relativePath: "models" | "chat/completions",
+  method: "GET" | "POST",
+  body: string | undefined,
+  apiKey: string,
+): AiTranslationRequestMetadata {
+  let endpoint: string;
+  try {
+    const url = new URL(baseUrl.trim());
+    const path = url.pathname.replace(/\/+$/, "");
+    url.pathname = `${path}/${relativePath}`;
+    url.search = "";
+    url.hash = "";
+    endpoint = url.toString();
+  } catch {
+    endpoint = `${baseUrl.trim().replace(/\/+$/, "")}/${relativePath}`;
+  }
+
+  return {
+    method,
+    endpoint: redactTranslationSecret(endpoint, apiKey),
+    body: body ? redactTranslationSecret(body, apiKey) : undefined,
+  };
 }
 
 interface SettingsPageProps {
@@ -102,8 +142,7 @@ export function SettingsPage({
   const [translationModels, setTranslationModels] = useState<AiTranslationModel[]>([]);
   const [translationModelsLoading, setTranslationModelsLoading] = useState(false);
   const [translationTestLoading, setTranslationTestLoading] = useState(false);
-  const [translationTestResult, setTranslationTestResult] = useState<AiTranslationConnectionTestResult>();
-  const [translationRequestError, setTranslationRequestError] = useState<{ title: string; detail: string }>();
+  const [translationRequestActivity, setTranslationRequestActivity] = useState<TranslationRequestActivity>();
   const translationNetworkRef = useRef(false);
   const [githubDownloadStatus, setGithubDownloadStatus] = useState<GithubDownloadSettings>({
     mode: "direct",
@@ -239,16 +278,28 @@ export function SettingsPage({
 
   const loadTranslationModels = async () => {
     if (translationNetworkRef.current || translationMutationRef.current) return;
+    const apiKey = translationApiKey.trim();
+    const request = translationRequestPreview(
+      translationBaseUrl,
+      "models",
+      "GET",
+      undefined,
+      apiKey,
+    );
     translationNetworkRef.current = true;
     setTranslationModelsLoading(true);
-    setTranslationRequestError(undefined);
-    setTranslationTestResult(undefined);
+    setTranslationRequestActivity({ phase: "loading", request });
     try {
       const result = await listAiTranslationModels({
         baseUrl: translationBaseUrl,
-        apiKey: translationApiKey.trim() || undefined,
+        apiKey: apiKey || undefined,
       });
       setTranslationModels(result.models);
+      setTranslationRequestActivity({
+        phase: "success",
+        request: result.request,
+        response: result.response,
+      });
       if (result.models.length === 0) {
         message.warning("接口未返回可用模型，仍可手动填写 Model ID");
       } else {
@@ -256,7 +307,7 @@ export function SettingsPage({
       }
     } catch (error) {
       const detail = String(error);
-      setTranslationRequestError({ title: "模型列表获取失败", detail });
+      setTranslationRequestActivity({ phase: "error", request, error: detail });
       message.error(detail);
     } finally {
       translationNetworkRef.current = false;
@@ -266,22 +317,38 @@ export function SettingsPage({
 
   const sendTranslationTest = async () => {
     if (translationNetworkRef.current || translationMutationRef.current) return;
+    const apiKey = translationApiKey.trim();
+    const requestBody = JSON.stringify({
+      model: translationModelId.trim(),
+      messages: [{ role: "user", content: TRANSLATION_CONNECTION_TEST_PROMPT }],
+      max_tokens: 16,
+    }, null, 2);
+    const request = translationRequestPreview(
+      translationBaseUrl,
+      "chat/completions",
+      "POST",
+      requestBody,
+      apiKey,
+    );
     translationNetworkRef.current = true;
     setTranslationTestLoading(true);
-    setTranslationRequestError(undefined);
-    setTranslationTestResult(undefined);
+    setTranslationRequestActivity({ phase: "loading", request });
     try {
       const result = await testAiTranslationConnection({
         baseUrl: translationBaseUrl,
         modelId: translationModelId,
-        apiKey: translationApiKey.trim() || undefined,
+        apiKey: apiKey || undefined,
       });
       setTranslationModelId(result.modelId);
-      setTranslationTestResult(result);
+      setTranslationRequestActivity({
+        phase: "success",
+        request: result.request,
+        response: result.response,
+      });
       message.success("AI 接口测试成功");
     } catch (error) {
       const detail = String(error);
-      setTranslationRequestError({ title: "AI 接口测试失败", detail });
+      setTranslationRequestActivity({ phase: "error", request, error: detail });
       message.error(detail);
     } finally {
       translationNetworkRef.current = false;
@@ -303,7 +370,6 @@ export function SettingsPage({
       setTranslationBaseUrl(status.baseUrl ?? translationBaseUrl);
       setTranslationModelId(status.modelId ?? translationModelId);
       setTranslationApiKey("");
-      setTranslationRequestError(undefined);
       message.success("AI 翻译配置已保存");
     } catch (error) {
       message.error(String(error));
@@ -324,8 +390,7 @@ export function SettingsPage({
       setTranslationModelId("");
       setTranslationApiKey("");
       setTranslationModels([]);
-      setTranslationRequestError(undefined);
-      setTranslationTestResult(undefined);
+      setTranslationRequestActivity(undefined);
       message.success("AI 翻译配置已清除");
     } catch (error) {
       message.error(String(error));
@@ -395,21 +460,18 @@ export function SettingsPage({
   const updateTranslationBaseUrl = (value: string) => {
     setTranslationBaseUrl(value);
     setTranslationModels([]);
-    setTranslationRequestError(undefined);
-    setTranslationTestResult(undefined);
+    setTranslationRequestActivity(undefined);
   };
 
   const updateTranslationApiKey = (value: string) => {
     setTranslationApiKey(value);
     setTranslationModels([]);
-    setTranslationRequestError(undefined);
-    setTranslationTestResult(undefined);
+    setTranslationRequestActivity(undefined);
   };
 
   const updateTranslationModelId = (value: string) => {
     setTranslationModelId(value);
-    setTranslationRequestError(undefined);
-    setTranslationTestResult(undefined);
+    setTranslationRequestActivity(undefined);
   };
 
   const translationControlsBusy = translationStatusLoading
@@ -421,6 +483,18 @@ export function SettingsPage({
       && hasSameOrigin(translationStatus.baseUrl, translationBaseUrl));
   const translationProviderReady = Boolean(translationBaseUrl.trim())
     && translationCredentialAvailable;
+  const translationModelOptions = translationModels.map((model) => ({
+    value: model.id,
+    label: (
+      <div className="ai-model-option">
+        <span>{model.id}</span>
+        {model.ownedBy && <small>{model.ownedBy}</small>}
+      </div>
+    ),
+  }));
+  const selectedTranslationModel = translationModels.some((model) => model.id === translationModelId)
+    ? translationModelId
+    : undefined;
   return (
     <section>
       <PageTitle title="设置" subtitle="游戏位置、启动方式与安全策略" />
@@ -689,19 +763,25 @@ export function SettingsPage({
               <Input
                 id="translation-model-id"
                 value={translationModelId}
-                list={translationModels.length > 0 ? "translation-model-options" : undefined}
                 disabled={translationControlsBusy}
                 allowClear
-                placeholder="获取模型后选择，或手动输入 Model ID"
+                placeholder="手动输入 Model ID"
                 autoComplete="off"
                 spellCheck={false}
                 onChange={(event) => updateTranslationModelId(event.target.value)}
               />
-              <datalist id="translation-model-options">
-                {translationModels.map((model) => (
-                  <option key={model.id} value={model.id} label={model.ownedBy ?? model.id} />
-                ))}
-              </datalist>
+              <Select
+                aria-label="选择已获取的模型"
+                value={selectedTranslationModel}
+                options={translationModelOptions}
+                disabled={translationControlsBusy || translationModels.length === 0}
+                placeholder={translationModels.length > 0 ? "选择模型" : "暂无模型"}
+                optionFilterProp="value"
+                optionLabelProp="value"
+                showSearch
+                allowClear
+                onChange={(value: string | undefined) => updateTranslationModelId(value ?? "")}
+              />
               <Button
                 icon={<ReloadOutlined />}
                 loading={translationModelsLoading}
@@ -717,22 +797,50 @@ export function SettingsPage({
               </small>
             )}
           </div>
-          {translationRequestError && (
+          {translationRequestActivity && (
             <Alert
-              type="error"
+              className="ai-translation-activity"
+              type={translationRequestActivity.phase === "error"
+                ? "error"
+                : translationRequestActivity.phase === "success" ? "success" : "info"}
               showIcon
-              closable
-              message={translationRequestError.title}
-              description={translationRequestError.detail}
-              onClose={() => setTranslationRequestError(undefined)}
-            />
-          )}
-          {translationTestResult && (
-            <Alert
-              type="success"
-              showIcon
-              message={`连接成功 · ${translationTestResult.modelId}`}
-              description={`服务响应：${translationTestResult.message}`}
+              closable={translationRequestActivity.phase !== "loading"}
+              message={translationRequestActivity.phase === "loading" ? (
+                <>
+                  正在向 <code>{translationRequestActivity.request.endpoint}</code> 发起请求…
+                </>
+              ) : translationRequestActivity.phase === "success" ? "请求完成" : "请求失败"}
+              description={(
+                <div className="ai-translation-activity-details">
+                  <div className="ai-translation-request-target">
+                    <Tag bordered={false}>{translationRequestActivity.request.method}</Tag>
+                    <code>{translationRequestActivity.request.endpoint}</code>
+                  </div>
+                  <div className="ai-translation-payload">
+                    <strong>请求内容</strong>
+                    <pre>{translationRequestActivity.request.body ?? "无（GET 请求）"}</pre>
+                  </div>
+                  {translationRequestActivity.response && (
+                    <div className="ai-translation-payload">
+                      <strong>回复摘要</strong>
+                      <span>{translationRequestActivity.response.summary}</span>
+                      {translationRequestActivity.response.content && (
+                        <>
+                          <strong>回复内容</strong>
+                          <pre>{translationRequestActivity.response.content}</pre>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {translationRequestActivity.error && (
+                    <div className="ai-translation-payload">
+                      <strong>错误</strong>
+                      <span>{translationRequestActivity.error}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+              onClose={() => setTranslationRequestActivity(undefined)}
             />
           )}
           <Space wrap className="ai-translation-actions">

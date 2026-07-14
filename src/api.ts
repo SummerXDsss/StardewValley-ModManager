@@ -7,6 +7,7 @@ import type {
   AiTranslationStatus,
   Dashboard,
   DownloadedModFile,
+  DownloadedModTranslation,
   DownloadedSmapiInstaller,
   GameProcessStatus,
   GithubDownloadSettings,
@@ -15,10 +16,13 @@ import type {
   ListAiTranslationModelsRequest,
   NexusAuthStatus,
   NexusModDetails,
+  RemoteModSearchResult,
   RemoteMod,
   SaveAiTranslationSettingsRequest,
+  SearchRemoteModsRequest,
   SmapiPlatform,
   SmapiReleaseInfo,
+  SteamStatus,
   TestAiTranslationConnectionRequest,
   TranslateModResult,
   UninstalledSmapiResult,
@@ -42,6 +46,11 @@ export async function scanGamePath(gamePath: string): Promise<Dashboard> {
     return dashboard;
   }
   return invoke<Dashboard>("scan_game_path", { gamePath });
+}
+
+export async function getSteamStatus(): Promise<SteamStatus> {
+  if (!isTauri()) return { running: true };
+  return invoke<SteamStatus>("get_steam_status");
 }
 
 export async function chooseGameDirectory(): Promise<string | undefined> {
@@ -242,6 +251,14 @@ export async function translateMod(name: string, summary: string): Promise<Trans
   return invoke<TranslateModResult>("translate_mod", { request: { name, summary } });
 }
 
+export async function translateInstalledMod(
+  gamePath: string,
+  modPath: string,
+): Promise<TranslateModResult> {
+  if (!isTauri()) throw new Error("已安装 Mod 翻译需要在 Tauri 桌面应用中使用");
+  return invoke<TranslateModResult>("translate_installed_mod", { gamePath, modPath });
+}
+
 export async function discoverMods(): Promise<RemoteMod[]> {
   if (isTauri()) return invoke<RemoteMod[]>("discover_mods");
 
@@ -307,6 +324,112 @@ export async function discoverMods(): Promise<RemoteMod[]> {
   return mods;
 }
 
+export async function searchRemoteMods(
+  request: SearchRemoteModsRequest,
+): Promise<RemoteModSearchResult> {
+  const query = request.query.trim();
+  if (!query) return { mods: await discoverMods(), issues: [] };
+  if (isTauri()) return invoke<RemoteModSearchResult>("search_remote_mods", { request: { ...request, query } });
+
+  const searches: Array<{ source: string; request: Promise<RemoteMod[]> }> = [];
+  if (request.source === "all" || request.source === "nexus") {
+    searches.push({ source: "Nexus Mods", request: searchPublicNexusMods(query) });
+  }
+  if (request.source === "all" || request.source === "github") {
+    searches.push({ source: "GitHub", request: searchGithubMods(query) });
+  }
+
+  const settled = await Promise.allSettled(searches.map((search) => search.request));
+  const result: RemoteModSearchResult = { mods: [], issues: [] };
+  settled.forEach((item, index) => {
+    const sourceName = searches[index].source;
+    if (item.status === "fulfilled") {
+      result.mods.push(...item.value);
+    } else {
+      result.issues.push({ source: sourceName, kind: "error", message: String(item.reason) });
+    }
+  });
+  if (request.source === "all" || request.source === "nexus") {
+    result.issues.push({
+      source: "Nexus Mods",
+      kind: "warning",
+      message: "浏览器预览无法读取系统凭据，仅在 Nexus 官方公开趋势榜中匹配；正式应用会使用设置中的 Personal API Key 扩展到热门、最近更新和最近新增列表。",
+    });
+  }
+  return result;
+}
+
+async function searchGithubMods(query: string): Promise<RemoteMod[]> {
+  const url = new URL("https://api.github.com/search/repositories");
+  const literalQuery = query.replace(/["\\]/g, " ").trim();
+  url.searchParams.set(
+    "q",
+    `"${literalQuery}" "stardew valley" mod in:name,description,readme archived:false fork:false`,
+  );
+  url.searchParams.set("sort", "stars");
+  url.searchParams.set("order", "desc");
+  url.searchParams.set("per_page", "24");
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  });
+  if (!response.ok) throw new Error(`GitHub 搜索请求失败：HTTP ${response.status}`);
+  const data = await response.json() as {
+    items: Array<{
+      id: number;
+      name: string;
+      full_name: string;
+      owner: { login: string };
+      description: string | null;
+      html_url: string;
+      stargazers_count: number;
+      updated_at: string;
+    }>;
+  };
+  return data.items.map((repo): RemoteMod => ({
+    id: `github:${repo.id}`,
+    name: repo.name,
+    author: repo.owner.login,
+    summary: repo.description ?? "GitHub 上的 Stardew Valley Mod",
+    source: "GitHub",
+    version: "源码",
+    popularity: `${repo.stargazers_count} stars`,
+    compatibility: "查看发布说明",
+    updatedAt: repo.updated_at.slice(0, 10),
+    pageUrl: repo.html_url,
+    providerId: repo.full_name,
+  }));
+}
+
+async function searchPublicNexusMods(query: string): Promise<RemoteMod[]> {
+  const response = await fetch("https://api.nexusmods.com/v3/games/stardewvalley/trending-mods", {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) throw new Error(`Nexus Mods 搜索请求失败：HTTP ${response.status}`);
+  const data = await response.json() as {
+    data: { mods: Array<{ name: string; author?: string; summary?: string; picture_url?: string; mod_page_url: string }> };
+  };
+  const needle = query.toLocaleLowerCase();
+  return data.data.mods
+    .filter((mod) => `${mod.name} ${mod.author ?? ""} ${mod.summary ?? ""}`.toLocaleLowerCase().includes(needle))
+    .map((mod): RemoteMod => ({
+      id: `nexus:${mod.mod_page_url}`,
+      name: mod.name,
+      author: mod.author ?? "Nexus Mods 作者",
+      summary: mod.summary ?? "Nexus Mods 热门 Mod",
+      source: "Nexus Mods",
+      version: "热门",
+      popularity: "趋势榜",
+      compatibility: "查看发布说明",
+      updatedAt: "实时",
+      pageUrl: mod.mod_page_url,
+      imageUrl: mod.picture_url,
+      providerId: mod.mod_page_url.split("/").filter(Boolean).at(-1),
+    }));
+}
+
 export async function openRemoteUrl(url: string) {
   if (!isTauri()) {
     window.open(url, "_blank", "noopener,noreferrer");
@@ -335,7 +458,11 @@ export async function getNexusModDetails(gameScopedId: string): Promise<NexusMod
   return invoke<NexusModDetails>("get_nexus_mod_details", { gameScopedId });
 }
 
-export async function downloadNexusFile(modId: string, fileId: string): Promise<DownloadedModFile> {
+export async function downloadNexusFile(
+  modId: string,
+  fileId: string,
+  translation?: DownloadedModTranslation,
+): Promise<DownloadedModFile> {
   if (!isTauri()) throw new Error("Nexus 文件下载需要在 Tauri 桌面应用中使用");
-  return invoke<DownloadedModFile>("download_nexus_file", { modId, fileId });
+  return invoke<DownloadedModFile>("download_nexus_file", { modId, fileId, translation });
 }

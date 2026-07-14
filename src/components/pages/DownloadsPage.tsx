@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Alert, App, Avatar, Button, Drawer, Empty, Input, Segmented, Space, Table, Tag } from "antd";
+import { useEffect, useRef, useState } from "react";
+import { Alert, App, Avatar, Button, Drawer, Empty, Input, Segmented, Space, Table, Tag, Typography } from "antd";
 import type { TableProps } from "antd";
 import {
   CloudDownloadOutlined,
@@ -9,38 +9,97 @@ import {
   TranslationOutlined,
 } from "@ant-design/icons";
 import { PageTitle } from "../shared";
-import { discoverMods, downloadNexusFile, getNexusModDetails, openRemoteUrl, translateMod } from "../../api";
-import type { NexusFileVersion, NexusModDetails, RemoteMod } from "../../types";
+import {
+  discoverMods,
+  downloadNexusFile,
+  getNexusModDetails,
+  openRemoteUrl,
+  searchRemoteMods,
+  translateMod,
+} from "../../api";
+import type {
+  NexusFileVersion,
+  NexusModDetails,
+  RemoteMod,
+  RemoteModSearchIssue,
+  RemoteModSearchSource,
+} from "../../types";
+
+interface NexusDetailsSelection {
+  modId: string;
+  providerId: string;
+  details: NexusModDetails;
+}
 
 export function DownloadsPage() {
   const { message } = App.useApp();
   const [search, setSearch] = useState("");
-  const [source, setSource] = useState("全部");
+  const [source, setSource] = useState<RemoteModSearchSource>("all");
+  const [activeQuery, setActiveQuery] = useState<string>();
   const [remoteMods, setRemoteMods] = useState<RemoteMod[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string>();
+  const [searchIssues, setSearchIssues] = useState<RemoteModSearchIssue[]>([]);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsError, setDetailsError] = useState<string>();
-  const [details, setDetails] = useState<NexusModDetails>();
+  const [detailsSelection, setDetailsSelection] = useState<NexusDetailsSelection>();
   const [downloadingFile, setDownloadingFile] = useState<string>();
-  const [translatingMod, setTranslatingMod] = useState<string>();
+  const [translatingModIds, setTranslatingModIds] = useState<Set<string>>(() => new Set());
+  const translatingModIdsRef = useRef(new Set<string>());
+  const requestSequence = useRef(0);
+  const detailsRequestSequence = useRef(0);
+  const details = detailsSelection?.details;
 
-  const mods = remoteMods.filter((mod) => {
-    const matchesSource = source === "全部" || mod.source === source;
-    const matchesSearch = `${mod.name} ${mod.author} ${mod.summary}`.toLowerCase().includes(search.toLowerCase());
-    return matchesSource && matchesSearch;
-  });
+  const mods = activeQuery
+    ? remoteMods
+    : remoteMods.filter((mod) => (
+      source === "all"
+      || (source === "nexus" && mod.source === "Nexus Mods")
+      || (source === "github" && mod.source === "GitHub")
+    ));
 
   const loadMods = async () => {
+    const requestId = ++requestSequence.current;
     setLoading(true);
     setLoadError(undefined);
+    setSearchIssues([]);
     try {
-      setRemoteMods(await discoverMods());
+      const discovered = await discoverMods();
+      if (requestId !== requestSequence.current) return;
+      setRemoteMods(discovered);
+      setActiveQuery(undefined);
     } catch (error) {
+      if (requestId !== requestSequence.current) return;
       setLoadError(String(error));
     } finally {
-      setLoading(false);
+      if (requestId === requestSequence.current) setLoading(false);
+    }
+  };
+
+  const runSearch = async (value = search, selectedSource = source) => {
+    const query = value.trim();
+    if (!query) {
+      setSearch("");
+      await loadMods();
+      return;
+    }
+
+    const requestId = ++requestSequence.current;
+    setLoading(true);
+    setLoadError(undefined);
+    setSearchIssues([]);
+    try {
+      const result = await searchRemoteMods({ query, source: selectedSource });
+      if (requestId !== requestSequence.current) return;
+      setRemoteMods(result.mods);
+      setSearchIssues(result.issues);
+      setActiveQuery(query);
+    } catch (error) {
+      if (requestId !== requestSequence.current) return;
+      setLoadError(String(error));
+    } finally {
+      if (requestId === requestSequence.current) setLoading(false);
     }
   };
 
@@ -56,25 +115,65 @@ export function DownloadsPage() {
 
   const showNexusDetails = async (mod: RemoteMod) => {
     if (!mod.providerId) return;
+    const providerId = mod.providerId;
+    const requestId = ++detailsRequestSequence.current;
     setDetailsOpen(true);
-    setDetails(undefined);
+    setDetailsSelection(undefined);
     setDetailsError(undefined);
     setDetailsLoading(true);
     try {
-      setDetails(await getNexusModDetails(mod.providerId));
+      const nextDetails = await getNexusModDetails(providerId);
+      if (requestId !== detailsRequestSequence.current) return;
+      if (nextDetails.gameScopedId !== providerId) {
+        throw new Error("Nexus 返回的 Mod ID 与当前选择不一致");
+      }
+      setDetailsSelection({ modId: mod.id, providerId, details: nextDetails });
     } catch (error) {
+      if (requestId !== detailsRequestSequence.current) return;
       setDetailsError(String(error));
     } finally {
-      setDetailsLoading(false);
+      if (requestId === detailsRequestSequence.current) setDetailsLoading(false);
     }
   };
 
-  const downloadVersion = async (version: NexusFileVersion) => {
-    if (!details) return;
+  const closeNexusDetails = () => {
+    detailsRequestSequence.current += 1;
+    setDetailsOpen(false);
+    setDetailsLoading(false);
+  };
+
+  const downloadVersion = async (
+    selection: NexusDetailsSelection,
+    version: NexusFileVersion,
+  ) => {
+    const versionBelongsToMod = selection.details.files.some((file) => (
+      file.versions.some((candidate) => (
+        candidate.id === version.id && candidate.gameScopedId === version.gameScopedId
+      ))
+    ));
+    if (!versionBelongsToMod) {
+      message.error("所选文件与当前 Nexus Mod 不匹配，请重新打开详情");
+      return;
+    }
+
     setDownloadingFile(version.id);
     try {
-      const downloaded = await downloadNexusFile(details.gameScopedId, version.gameScopedId);
-      message.success(`已下载到 ${downloaded.path}`);
+      const sourceMod = remoteMods.find((mod) => (
+        mod.id === selection.modId
+        && mod.source === "Nexus Mods"
+        && mod.providerId === selection.providerId
+        && selection.details.gameScopedId === selection.providerId
+      ));
+      const downloaded = await downloadNexusFile(
+        selection.providerId,
+        version.gameScopedId,
+        sourceMod?.translated
+          ? { name: sourceMod.name, description: sourceMod.summary }
+          : undefined,
+      );
+      message.success(downloaded.metadataPath
+        ? `已下载并保存译文元数据：${downloaded.path}`
+        : `已下载到 ${downloaded.path}`);
     } catch (error) {
       message.error(String(error));
     } finally {
@@ -83,45 +182,67 @@ export function DownloadsPage() {
   };
 
   const translateRemoteMod = async (mod: RemoteMod) => {
-    if (translatingMod) return;
-    setTranslatingMod(mod.id);
+    if (translatingModIdsRef.current.has(mod.id)) return;
+    translatingModIdsRef.current.add(mod.id);
+    setTranslatingModIds(new Set(translatingModIdsRef.current));
     try {
       const translated = await translateMod(mod.name, mod.summary);
       setRemoteMods((current) => current.map((item) => (
-        item.id === mod.id ? { ...item, name: translated.name, summary: translated.summary } : item
+        item.id === mod.id
+          ? { ...item, name: translated.name, summary: translated.summary, translated: true }
+          : item
       )));
       message.success("名称与简介已翻译");
     } catch (error) {
       message.error(String(error));
     } finally {
-      setTranslatingMod(undefined);
+      translatingModIdsRef.current.delete(mod.id);
+      setTranslatingModIds(new Set(translatingModIdsRef.current));
     }
   };
 
-  const sourceOptions = ["全部", ...Array.from(new Set(remoteMods.map((mod) => mod.source)))];
+  const sourceOptions = [
+    { label: "全部", value: "all" },
+    { label: "Nexus Mods", value: "nexus" },
+    { label: "GitHub", value: "github" },
+  ];
+  const hasSearchErrors = searchIssues.some((issue) => issue.kind === "error");
 
   const columns: TableProps<RemoteMod>["columns"] = [
     {
       title: "Mod",
       dataIndex: "name",
+      width: 500,
       render: (_, mod) => (
         <div className="remote-mod-row">
           <Avatar shape="square" size={48} src={mod.imageUrl}>
             {mod.name.slice(0, 1)}
           </Avatar>
           <div className="remote-mod">
-            <strong>{mod.name}</strong>
+            <div className="remote-mod-title">
+              <strong>{mod.name}</strong>
+              {mod.translated && <Tag color="green">已翻译</Tag>}
+            </div>
             <div className="remote-mod-summary">
-              <span>{mod.summary}</span>
+              <Typography.Paragraph
+                className="remote-mod-description"
+                ellipsis={{
+                  rows: 2,
+                  expandable: "collapsible",
+                  symbol: (expanded) => expanded ? "收起" : "展开",
+                }}
+              >
+                {mod.summary}
+              </Typography.Paragraph>
               <Button
                 type="text"
                 size="small"
                 icon={<TranslationOutlined />}
-                loading={translatingMod === mod.id}
-                disabled={Boolean(translatingMod && translatingMod !== mod.id)}
+                loading={translatingModIds.has(mod.id)}
+                disabled={translatingModIds.has(mod.id)}
                 onClick={() => void translateRemoteMod(mod)}
               >
-                一键翻译
+                {mod.translated ? "重新翻译" : "一键翻译"}
               </Button>
             </div>
             <small>{mod.author}</small>
@@ -158,20 +279,32 @@ export function DownloadsPage() {
     <section>
       <PageTitle title="发现 Mod" subtitle="直接浏览来自可信上游的星露谷物语 Mod" />
       <div className="download-browser">
-        <Input
+        <Input.Search
           size="large"
           prefix={<SearchOutlined />}
           placeholder="搜索 Mod、作者或功能"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
+          onSearch={(value) => void runSearch(value)}
+          enterButton="搜索"
+          loading={loading}
           allowClear
         />
         <Button size="large">安装本地压缩包</Button>
       </div>
       <div className="source-filter">
         <span>来源</span>
-        <Segmented options={sourceOptions} value={source} onChange={(value) => setSource(String(value))} />
-        <small>共 {mods.length} 个结果</small>
+        <Segmented
+          options={sourceOptions}
+          value={source}
+          disabled={loading}
+          onChange={(value) => {
+            const nextSource = String(value) as RemoteModSearchSource;
+            setSource(nextSource);
+            if (activeQuery) void runSearch(search, nextSource);
+          }}
+        />
+        <small>{activeQuery ? `“${activeQuery}” 共 ${mods.length} 个结果` : `共 ${mods.length} 个发现结果`}</small>
       </div>
       {loadError && (
         <Alert
@@ -182,6 +315,20 @@ export function DownloadsPage() {
           action={<Button onClick={() => void loadMods()}>重试</Button>}
         />
       )}
+      {searchIssues.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message={hasSearchErrors
+            ? (mods.length > 0 ? "部分搜索来源不可用" : "搜索来源暂时不可用")
+            : "Nexus 搜索范围说明"}
+          description={searchIssues.map((issue) => (
+            <div key={`${issue.source}:${issue.message}`}>
+              <strong>{issue.source}：</strong>{issue.message}
+            </div>
+          ))}
+        />
+      )}
       <div className="table-shell remote-table">
         <Table
           rowKey="id"
@@ -189,15 +336,22 @@ export function DownloadsPage() {
           dataSource={mods}
           loading={loading}
           pagination={{ pageSize: 6, showSizeChanger: false }}
-          scroll={{ x: 760 }}
-          locale={{ emptyText: <Empty description="没有匹配的 Mod" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+          scroll={{ x: 1156 }}
+          locale={{
+            emptyText: (
+              <Empty
+                description={activeQuery ? `没有找到与“${activeQuery}”匹配的 Mod` : "暂时没有可发现的 Mod"}
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+              />
+            ),
+          }}
         />
       </div>
       <Drawer
         title={details?.name ?? "Nexus Mod 详情"}
         open={detailsOpen}
         width={680}
-        onClose={() => setDetailsOpen(false)}
+        onClose={closeNexusDetails}
       >
         {detailsLoading && <div className="drawer-loading">正在读取 Nexus 文件与版本...</div>}
         {detailsError && (
@@ -234,7 +388,7 @@ export function DownloadsPage() {
                         type="primary"
                         icon={<CloudDownloadOutlined />}
                         loading={downloadingFile === version.id}
-                        onClick={() => void downloadVersion(version)}
+                        onClick={() => void downloadVersion(detailsSelection, version)}
                       >
                         下载
                       </Button>

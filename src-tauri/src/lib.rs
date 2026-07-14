@@ -11,6 +11,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_dashboard,
             commands::scan_game_path,
+            commands::get_steam_status,
             commands::set_mod_enabled,
             commands::remove_mod,
             commands::open_mod_folder,
@@ -27,7 +28,9 @@ pub fn run() {
             commands::list_ai_translation_models,
             commands::test_ai_translation_connection,
             commands::translate_mod,
+            commands::translate_installed_mod,
             commands::discover_mods,
+            commands::search_remote_mods,
             commands::open_remote_url,
             commands::get_nexus_auth_status,
             commands::set_nexus_api_key,

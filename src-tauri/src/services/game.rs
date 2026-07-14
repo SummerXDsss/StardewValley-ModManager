@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command},
 };
-use sysinfo::System;
+use sysinfo::{ProcessRefreshKind, RefreshKind, System};
 use walkdir::WalkDir;
 
 #[cfg(unix)]
@@ -136,6 +136,18 @@ pub fn inspect_smapi(path: &Path) -> SmapiStatus {
                 .map(|name| name.to_string_lossy().into_owned())
         }),
     }
+}
+
+pub fn steam_running() -> bool {
+    System::new_with_specifics(RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()))
+        .processes()
+        .values()
+        .any(|process| is_steam_process_name(process.name()))
+}
+
+fn is_steam_process_name(name: &OsStr) -> bool {
+    let name = name.to_string_lossy().to_ascii_lowercase();
+    matches!(name.as_str(), "steam" | "steam.exe" | "steam_osx")
 }
 
 pub(crate) fn ensure_game_processes_stopped(game_path: &Path) -> Result<(), String> {
@@ -711,6 +723,16 @@ mod detection_tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+
+    #[test]
+    fn recognizes_only_the_main_steam_process_names() {
+        for name in ["steam", "Steam.exe", "steam_osx"] {
+            assert!(is_steam_process_name(OsStr::new(name)));
+        }
+        for name in ["steamwebhelper.exe", "steamservice.exe", "not-steam"] {
+            assert!(!is_steam_process_name(OsStr::new(name)));
+        }
+    }
 
     #[test]
     fn persists_and_revalidates_a_manually_selected_game_path() {

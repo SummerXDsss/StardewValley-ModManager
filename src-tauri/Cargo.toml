@@ -27,7 +27,7 @@ sysinfo = "0.37"
 tauri = { version = "2.9.3", features = [] }
 tauri-plugin-dialog = "2"
 thiserror = "2"
-tokio = { version = "1", features = ["fs", "io-util"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros"] }
 walkdir = "2"
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 

@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { App as AntApp, Layout, Spin } from "antd";
 import { Sidebar, Topbar } from "./components/layout";
 import { FirstRunSetup } from "./components/onboarding";
 import { OverviewPage, ModsPage, DownloadsPage, SmapiPage, SettingsPage } from "./components/pages";
-import { useDashboard, useGameProcess, useLaunchArguments, useLaunchPreference } from "./hooks";
+import { useDashboard, useGameProcess, useLaunchArguments, useLaunchPreference, useSteamStatus } from "./hooks";
 import type { LaunchPreference } from "./hooks";
 import {
   launchGame,
@@ -14,6 +14,7 @@ import {
   scanGamePath,
   setModEnabled,
   stopGame,
+  translateInstalledMod,
 } from "./api";
 import type { GameProcessAction } from "./components/layout/Topbar";
 import type { InstalledMod, LaunchTarget } from "./types";
@@ -27,9 +28,18 @@ export default function App() {
   const [onboardingComplete, setOnboardingComplete] = useState(
     () => localStorage.getItem(ONBOARDING_KEY) === "true",
   );
-  const { dashboard, setDashboard, loading, setLoading, refresh, updateMod } = useDashboard();
+  const {
+    dashboard,
+    setDashboard,
+    loading,
+    error: dashboardError,
+    setLoading,
+    refresh,
+    updateMod,
+  } = useDashboard();
   const { rememberLaunch, launchPreference, changeRememberLaunch, updateLaunchPreference } = useLaunchPreference();
   const { launchArguments, updateLaunchArguments } = useLaunchArguments();
+  const steamStatus = useSteamStatus();
   const {
     status: gameProcess,
     monitoring,
@@ -37,18 +47,20 @@ export default function App() {
     acceptStatus,
   } = useGameProcess();
   const [gameProcessAction, setGameProcessAction] = useState<GameProcessAction>(null);
+  const [translatingModPaths, setTranslatingModPaths] = useState<Set<string>>(() => new Set());
+  const translatingModPathsRef = useRef(new Set<string>());
   const gameRunning = gameProcess.running || gameProcess.state === "running";
   const modChangesDisabled = monitoring || gameRunning || gameProcessAction !== null;
 
   const toggleMod = async (mod: InstalledMod, enabled: boolean) => {
     if (modChangesDisabled) return message.warning("请先关闭游戏，再更改 Mod 加载状态");
     if (!dashboard?.installation) return;
-    updateMod(mod.id, { enabled });
+    updateMod(mod.path, { enabled });
     try {
       await setModEnabled(dashboard.installation.path, mod.path, enabled);
       message.success(`${mod.name} 已${enabled ? "启用" : "禁用"}`);
     } catch (error) {
-      updateMod(mod.id, { enabled: !enabled });
+      updateMod(mod.path, { enabled: !enabled });
       message.error(String(error));
     }
   };
@@ -70,10 +82,33 @@ export default function App() {
         if (modChangesDisabled) return;
         if (!dashboard?.installation) return;
         await removeMod(dashboard.installation.path, mod.path);
-        setDashboard({ ...dashboard, mods: dashboard.mods.filter((item) => item.id !== mod.id) });
+        setDashboard((current) =>
+          current ? { ...current, mods: current.mods.filter((item) => item.path !== mod.path) } : current,
+        );
         message.success("已移到回收区");
       },
     });
+  };
+
+  const handleTranslateMod = async (mod: InstalledMod) => {
+    const gamePath = dashboard?.installation?.path;
+    if (!gamePath || translatingModPathsRef.current.has(mod.path)) return;
+    translatingModPathsRef.current.add(mod.path);
+    setTranslatingModPaths(new Set(translatingModPathsRef.current));
+    try {
+      const result = await translateInstalledMod(gamePath, mod.path);
+      updateMod(mod.path, {
+        name: result.name,
+        description: result.summary,
+        translated: true,
+      });
+      message.success(`${result.name} 翻译已保存`);
+    } catch (error) {
+      message.error(String(error));
+    } finally {
+      translatingModPathsRef.current.delete(mod.path);
+      setTranslatingModPaths(new Set(translatingModPathsRef.current));
+    }
   };
 
   const start = async (target: LaunchTarget, modsPath?: string) => {
@@ -150,6 +185,8 @@ export default function App() {
             onToggleMod={toggleMod}
             onOpenFolder={handleOpenFolder}
             onRemoveMod={confirmRemove}
+            onTranslateMod={handleTranslateMod}
+            translatingModPaths={translatingModPaths}
           />
         );
       case "downloads":
@@ -197,6 +234,12 @@ export default function App() {
         <Layout className="app-main">
           <Topbar
             gamePath={dashboard?.installation?.path}
+            smapi={dashboard?.smapi}
+            smapiLoading={loading && !dashboard}
+            smapiError={dashboard ? undefined : dashboardError}
+            steamRunning={steamStatus.running}
+            steamLoading={steamStatus.loading}
+            steamError={steamStatus.error}
             rememberLaunch={rememberLaunch}
             onRememberLaunchChange={changeRememberLaunch}
             onLaunch={runLaunchChoice}

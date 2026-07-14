@@ -11,6 +11,8 @@ interface ModsPageProps {
   onToggleMod: (mod: InstalledMod, enabled: boolean) => void;
   onOpenFolder: (mod: InstalledMod) => void;
   onRemoveMod: (mod: InstalledMod) => void;
+  onTranslateMod: (mod: InstalledMod) => void;
+  translatingModPaths: ReadonlySet<string>;
 }
 
 export function ModsPage({
@@ -20,6 +22,8 @@ export function ModsPage({
   onToggleMod,
   onOpenFolder,
   onRemoveMod,
+  onTranslateMod,
+  translatingModPaths,
 }: ModsPageProps) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("全部");
@@ -61,6 +65,8 @@ export function ModsPage({
           onToggleMod={onToggleMod}
           onOpenFolder={onOpenFolder}
           onRemoveMod={onRemoveMod}
+          onTranslateMod={onTranslateMod}
+          translatingModPaths={translatingModPaths}
         />
       </div>
     </section>

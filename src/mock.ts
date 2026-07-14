@@ -16,6 +16,8 @@ export const demoDashboard: Dashboard = {
     {
       id: "Pathoschild.ContentPatcher",
       name: "Content Patcher",
+      description: "Loads content packs which edit the game's images, data, and maps without replacing its files.",
+      translated: false,
       author: "Pathoschild",
       version: "2.6.3",
       path: "Mods\\ContentPatcher",
@@ -26,6 +28,8 @@ export const demoDashboard: Dashboard = {
     {
       id: "spacechase0.GenericModConfigMenu",
       name: "Generic Mod Config Menu",
+      description: "Adds an in-game options menu for supported mods.",
+      translated: false,
       author: "spacechase0",
       version: "1.14.1",
       path: "Mods\\GenericModConfigMenu",
@@ -37,6 +41,8 @@ export const demoDashboard: Dashboard = {
     {
       id: "Example.SeasonalGarden",
       name: "Seasonal Garden",
+      description: "Adds a changing seasonal garden to the farm.",
+      translated: false,
       author: "Juniper",
       version: "1.3.0",
       path: "Mods\\.SeasonalGarden",
@@ -47,4 +53,3 @@ export const demoDashboard: Dashboard = {
   ],
   warnings: ["1 个 Mod 有可用更新"],
 };
-

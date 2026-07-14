@@ -197,8 +197,16 @@ button, input {
   border-bottom: 1px solid var(--color-border);
 }
 
-.path-chip { 
+.topbar-environment {
+  min-width: 0;
   flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.path-chip {
+  flex: 0 1 180px;
   min-width: 0; 
   display: flex; 
   align-items: center; 
@@ -212,6 +220,52 @@ button, input {
   border: 0;
   cursor: pointer;
   text-align: left;
+}
+
+.path-edit-button {
+  flex: 0 0 38px;
+}
+
+.steam-runtime-status {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  color: var(--color-dark-muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.steam-runtime-status > i {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: #94A3B8;
+}
+
+.steam-runtime-status.running > i {
+  background: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.12);
+}
+
+.steam-runtime-status.checking > i {
+  background: var(--color-accent);
+  animation: process-pulse 1.2s ease-in-out infinite;
+}
+
+.steam-runtime-status:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.smapi-version-tag {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
+  white-space: nowrap;
 }
 
 .path-chip:hover {
@@ -529,16 +583,64 @@ button, input {
   background: transparent;
 }
 
-.mod-name { 
-  display: flex; 
-  align-items: center; 
+.mod-name {
+  display: flex;
+  align-items: flex-start;
   gap: 12px;
 }
 
-.mod-name > div { 
-  display: flex; 
-  flex-direction: column; 
+.mod-name > .mod-name-content {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  width: 100%;
+}
+
+.mod-name .health-dot {
+  margin-top: 6px;
+}
+
+.mod-title-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mod-title-row > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mod-title-row .ant-tag {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
+}
+
+.mod-description-row {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.mod-description-row .mod-description {
+  min-width: 0;
+  flex: 1 1 auto;
+  margin: 0;
+  color: var(--color-dark-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.mod-description-row .ant-btn {
+  flex: 0 0 auto;
+  height: 26px;
+  padding-inline: 5px;
+  color: #0F766E;
+  font-size: 12px;
 }
 
 .mod-name small { 
@@ -614,9 +716,28 @@ button, input {
 }
 
 .remote-mod { 
+  min-width: 0;
+  width: 100%;
   display: grid; 
   gap: 4px; 
   max-width: 480px;
+}
+
+.remote-mod-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.remote-mod-title > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.remote-mod-title .ant-tag {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
 }
 
 .remote-mod strong { 
@@ -637,9 +758,14 @@ button, input {
   gap: 6px;
 }
 
-.remote-mod-summary > span {
+.remote-mod-summary .remote-mod-description {
   min-width: 0;
   flex: 1 1 auto;
+  margin: 0;
+  color: var(--color-dark-muted);
+  line-height: 1.5;
+  font-size: 14px;
+  overflow-wrap: anywhere;
 }
 
 .remote-mod-summary .ant-btn {
@@ -876,7 +1002,7 @@ button, input {
 
 .ai-translation-model-control {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px) auto;
   gap: 8px;
 }
 
@@ -915,6 +1041,62 @@ button, input {
 }
 
 .ai-translation-setting .ant-alert-description {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.ai-translation-activity .ant-alert-message code {
+  overflow-wrap: anywhere;
+  color: inherit;
+  font-size: 12px;
+}
+
+.ai-translation-activity-details {
+  display: grid;
+  gap: 10px;
+  white-space: normal;
+}
+
+.ai-translation-request-target {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ai-translation-request-target .ant-tag {
+  flex: 0 0 auto;
+  margin: 0;
+  font-family: Consolas, "Courier New", monospace;
+}
+
+.ai-translation-request-target code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-foreground);
+  font-size: 12px;
+}
+
+.ai-translation-payload {
+  display: grid;
+  gap: 4px;
+}
+
+.ai-translation-payload > strong {
+  color: var(--color-foreground);
+  font-size: 12px;
+}
+
+.ai-translation-payload > pre {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  padding: 9px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: #F7F9FA;
+  color: #263238;
+  font: 12px/1.55 Consolas, "Courier New", monospace;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -1165,6 +1347,28 @@ button, input {
     display: none;
   }
 
+  .topbar-environment {
+    gap: 4px;
+  }
+
+  .steam-runtime-status {
+    width: 32px;
+    min-width: 32px;
+    justify-content: center;
+  }
+
+  .steam-runtime-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
   .game-process-controls {
     flex: 1 1 auto;
     justify-content: flex-end;
@@ -1172,7 +1376,7 @@ button, input {
   }
 
   .game-process-status {
-    min-width: 102px;
+    min-width: 88px;
   }
 
   .ai-translation-model-control {

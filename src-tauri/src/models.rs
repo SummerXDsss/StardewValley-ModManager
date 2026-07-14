@@ -19,9 +19,17 @@ pub struct SmapiStatus {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SteamStatus {
+    pub running: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InstalledMod {
     pub id: String,
     pub name: String,
+    pub description: Option<String>,
+    pub translated: bool,
     pub author: String,
     pub version: String,
     pub path: String,
@@ -57,6 +65,43 @@ pub struct RemoteMod {
     pub download_url: Option<String>,
     pub image_url: Option<String>,
     pub provider_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteModSearchSource {
+    All,
+    Nexus,
+    Github,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchRemoteModsRequest {
+    pub query: String,
+    pub source: RemoteModSearchSource,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteModSearchIssue {
+    pub source: String,
+    pub kind: RemoteModSearchIssueKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteModSearchIssueKind {
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteModSearchResult {
+    pub mods: Vec<RemoteMod>,
+    pub issues: Vec<RemoteModSearchIssue>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,6 +148,14 @@ pub struct NexusFileVersion {
 pub struct DownloadedModFile {
     pub path: String,
     pub file_name: String,
+    pub metadata_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DownloadedModTranslation {
+    pub name: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -145,6 +198,8 @@ pub enum LaunchTarget {
 #[serde(rename_all = "PascalCase")]
 pub struct Manifest {
     pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
     pub author: String,
     pub version: String,
     #[serde(rename = "UniqueID")]

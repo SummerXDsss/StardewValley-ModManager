@@ -1,6 +1,6 @@
-import { Button, Empty, Space, Switch, Table, Tag, Tooltip } from "antd";
+import { Button, Empty, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import type { TableProps } from "antd";
-import { DeleteOutlined, FolderOpenOutlined } from "@ant-design/icons";
+import { CheckCircleOutlined, DeleteOutlined, FolderOpenOutlined, TranslationOutlined } from "@ant-design/icons";
 import type { InstalledMod } from "../../types";
 
 interface ModTableProps {
@@ -10,6 +10,8 @@ interface ModTableProps {
   onToggleMod: (mod: InstalledMod, enabled: boolean) => void;
   onOpenFolder: (mod: InstalledMod) => void;
   onRemoveMod: (mod: InstalledMod) => void;
+  onTranslateMod?: (mod: InstalledMod) => void;
+  translatingModPaths?: ReadonlySet<string>;
 }
 
 export function ModTable({
@@ -19,16 +21,54 @@ export function ModTable({
   onToggleMod,
   onOpenFolder,
   onRemoveMod,
+  onTranslateMod,
+  translatingModPaths,
 }: ModTableProps) {
   const columns: TableProps<InstalledMod>["columns"] = [
     {
       title: "Mod",
       dataIndex: "name",
+      width: compact ? 330 : 440,
       render: (_, mod) => (
         <div className="mod-name">
           <span className={`health-dot ${mod.health}`} />
-          <div>
-            <strong>{mod.name}</strong>
+          <div className="mod-name-content">
+            <div className="mod-title-row">
+              <strong>{mod.name}</strong>
+              {mod.translated && (
+                <Tag icon={<CheckCircleOutlined />} color="green">
+                  已翻译
+                </Tag>
+              )}
+            </div>
+            {(mod.description || (!mod.translated && mod.health !== "error" && onTranslateMod)) && (
+              <div className="mod-description-row">
+                {mod.description && (
+                  <Typography.Paragraph
+                    className="mod-description"
+                    ellipsis={{
+                      rows: 2,
+                      expandable: "collapsible",
+                      symbol: (expanded) => expanded ? "收起" : "展开",
+                    }}
+                  >
+                    {mod.description}
+                  </Typography.Paragraph>
+                )}
+                {!mod.translated && mod.health !== "error" && onTranslateMod && (
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<TranslationOutlined />}
+                    loading={translatingModPaths?.has(mod.path)}
+                    disabled={translatingModPaths?.has(mod.path)}
+                    onClick={() => onTranslateMod(mod)}
+                  >
+                    一键翻译
+                  </Button>
+                )}
+              </div>
+            )}
             <small>{mod.id}</small>
           </div>
         </div>
@@ -94,12 +134,12 @@ export function ModTable({
 
   return (
     <Table
-      rowKey="id"
+      rowKey="path"
       columns={columns}
       dataSource={compact ? mods.slice(0, 5) : mods}
       pagination={compact ? false : { pageSize: 10, showSizeChanger: false }}
       locale={{ emptyText: <Empty description="没有匹配的 Mod" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-      scroll={{ x: 720 }}
+      scroll={{ x: 840 }}
     />
   );
 }
