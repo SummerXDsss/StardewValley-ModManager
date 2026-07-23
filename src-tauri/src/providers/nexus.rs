@@ -26,8 +26,30 @@ use crate::models::{
 
 const API_BASE: &str = "https://api.nexusmods.com/v3";
 const LEGACY_API_BASE: &str = "https://api.nexusmods.com/v1";
+const GRAPHQL_API_URL: &str = "https://api.nexusmods.com/v2/graphql";
 const TRENDING_URL: &str = "https://api.nexusmods.com/v3/games/stardewvalley/trending-mods";
 const SEARCH_LIST_ENDPOINTS: [&str; 3] = ["trending", "latest_updated", "latest_added"];
+const SEARCH_RESULT_LIMIT: u8 = 24;
+const SEARCH_MODS_QUERY: &str = r#"
+query SearchMods($filter: ModsFilter, $offset: Int, $count: Int) {
+  mods(filter: $filter, offset: $offset, count: $count) {
+    nodes {
+      modId
+      name
+      summary
+      pictureUrl
+      thumbnailUrl
+      endorsements
+      downloads
+      version
+      author
+      updatedAt
+      createdAt
+      uploader { name }
+    }
+  }
+}
+"#;
 const CACHE_TTL: Duration = Duration::from_secs(15 * 60);
 const KEYRING_SERVICE: &str = "com.summerxdsss.valleysteward";
 const KEYRING_USER: &str = "nexus-api-key";
@@ -125,6 +147,63 @@ struct NexusApiError {
     error: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct GraphqlSearchResponse {
+    data: Option<GraphqlSearchData>,
+    #[serde(default)]
+    errors: Vec<GraphqlError>,
+}
+
+#[derive(Deserialize)]
+struct GraphqlSearchData {
+    mods: Option<GraphqlSearchMods>,
+}
+
+#[derive(Deserialize)]
+struct GraphqlSearchMods {
+    #[serde(default)]
+    nodes: Vec<Option<GraphqlMod>>,
+}
+
+#[derive(Deserialize)]
+struct GraphqlError {
+    message: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphqlMod {
+    mod_id: u64,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    picture_url: Option<String>,
+    #[serde(default)]
+    thumbnail_url: Option<String>,
+    #[serde(default)]
+    endorsements: Option<u64>,
+    #[serde(default)]
+    downloads: Option<u64>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    uploader: Option<GraphqlUploader>,
+}
+
+#[derive(Deserialize)]
+struct GraphqlUploader {
+    #[serde(default)]
+    name: Option<String>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DownloadTranslationSidecar<'a> {
@@ -139,7 +218,8 @@ struct DownloadTranslationSidecar<'a> {
 #[derive(Deserialize)]
 struct LegacyMod {
     mod_id: u64,
-    name: String,
+    #[serde(default)]
+    name: Option<String>,
     #[serde(default)]
     author: Option<String>,
     #[serde(default)]
@@ -151,7 +231,7 @@ struct LegacyMod {
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
-    mod_downloads: u64,
+    mod_downloads: Option<u64>,
     #[serde(default)]
     updated_time: Option<String>,
 }
@@ -198,14 +278,14 @@ pub async fn discover() -> Result<Vec<RemoteMod>, String> {
         .collect::<Vec<_>>();
 
     if let Ok(client) = authenticated_client() {
-        for endpoint in ["trending", "latest_updated", "latest_added"] {
-            if let Ok(items) = get_json::<Vec<LegacyMod>>(
+        for endpoint in SEARCH_LIST_ENDPOINTS {
+            if let Ok(items) = get_json::<Vec<Option<LegacyMod>>>(
                 &client,
                 &format!("{LEGACY_API_BASE}/games/stardewvalley/mods/{endpoint}.json"),
             )
             .await
             {
-                mods.extend(items.into_iter().map(legacy_remote_mod));
+                mods.extend(items.into_iter().flatten().map(legacy_remote_mod));
             }
         }
     }
@@ -228,25 +308,40 @@ pub async fn discover() -> Result<Vec<RemoteMod>, String> {
 }
 
 pub async fn search(query: &str) -> Result<Vec<RemoteMod>, String> {
-    let client = authenticated_client().map_err(|error| format!("无法搜索 Nexus Mods：{error}"))?;
-    let mut mods = Vec::new();
-
-    for endpoint in SEARCH_LIST_ENDPOINTS {
-        let items = get_json::<Vec<LegacyMod>>(
-            &client,
-            &format!("{LEGACY_API_BASE}/games/stardewvalley/mods/{endpoint}.json"),
-        )
+    let response = public_client()?
+        .post(GRAPHQL_API_URL)
+        .header("Accept", "application/json")
+        .header("Application-Name", "Valley-Steward")
+        .header("Application-Version", "0.1")
+        .json(&graphql_search_body(query))
+        .send()
         .await
-        .map_err(|error| format!("Nexus Mods {endpoint} 列表搜索失败：{error}"))?;
-        mods.extend(items.into_iter().map(legacy_remote_mod));
-    }
+        .map_err(|error| format!("Nexus Mods 搜索请求失败：{error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Nexus Mods 搜索返回错误：{error}"))?;
+    let payload =
+        decode_json_response::<GraphqlSearchResponse>(response, "Nexus Mods 搜索数据").await?;
+    let error_detail = graphql_error_detail(&payload.errors);
+    let nodes = payload
+        .data
+        .and_then(|data| data.mods)
+        .map(|mods| mods.nodes)
+        .ok_or_else(|| {
+            error_detail
+                .map(|detail| format!("Nexus Mods 搜索失败：{detail}"))
+                .unwrap_or_else(|| "Nexus Mods 搜索未返回结果数据".to_string())
+        })?;
+    let mut mods = nodes
+        .into_iter()
+        .flatten()
+        .map(graphql_remote_mod)
+        .collect::<Vec<_>>();
 
     let mut seen = HashSet::new();
     mods.retain(|item| {
         item.provider_id
             .as_ref()
             .is_none_or(|provider_id| seen.insert(provider_id.clone()))
-            && remote_mod_matches(item, query)
     });
     Ok(mods)
 }
@@ -351,13 +446,7 @@ pub async fn download_file(
 ) -> Result<DownloadedModFile, String> {
     validate_numeric_id(mod_id, "Mod ID")?;
     validate_numeric_id(file_id, "文件 ID")?;
-    let mirrors = get_json::<Vec<DownloadMirror>>(
-        &authenticated_client()?,
-        &format!(
-            "{LEGACY_API_BASE}/games/stardewvalley/mods/{mod_id}/files/{file_id}/download_link.json"
-        ),
-    )
-    .await?;
+    let mirrors = request_download_mirrors(mod_id, file_id).await?;
     let mirror = mirrors
         .into_iter()
         .next()
@@ -659,17 +748,70 @@ fn nexus_connection_error(error: &reqwest::Error) -> String {
 }
 
 async fn get_json<T: for<'de> Deserialize<'de>>(client: &Client, url: &str) -> Result<T, String> {
-    client
+    let response = client
         .get(url)
         .header("Accept", "application/json")
         .send()
         .await
         .map_err(|error| format!("Nexus Mods 请求失败：{error}"))?
         .error_for_status()
-        .map_err(|error| format!("Nexus Mods 返回错误：{error}"))?
-        .json::<T>()
+        .map_err(|error| format!("Nexus Mods 返回错误：{error}"))?;
+    decode_json_response(response, "Nexus Mods 数据").await
+}
+
+async fn request_download_mirrors(
+    mod_id: &str,
+    file_id: &str,
+) -> Result<Vec<DownloadMirror>, String> {
+    let key = api_key()?;
+    let response = client_with_key(&key)?
+        .get(format!(
+            "{LEGACY_API_BASE}/games/stardewvalley/mods/{mod_id}/files/{file_id}/download_link.json"
+        ))
+        .header("Accept", "application/json")
+        .send()
         .await
-        .map_err(|error| format!("无法解析 Nexus Mods 数据：{error}"))
+        .map_err(|error| format!("Nexus 下载地址请求失败：{error}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let provider_message = read_provider_error(response, &key).await;
+        return Err(download_link_error(status, provider_message.as_deref()));
+    }
+    decode_json_response(response, "Nexus 下载地址").await
+}
+
+async fn decode_json_response<T: for<'de> Deserialize<'de>>(
+    response: Response,
+    label: &str,
+) -> Result<T, String> {
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| format!("无法读取{label}：{error}"))?;
+    serde_json::from_slice(&body).map_err(|error| format!("无法解析{label}：{error}"))
+}
+
+fn download_link_error(status: StatusCode, provider_message: Option<&str>) -> String {
+    let detail = provider_message
+        .filter(|message| !message.is_empty())
+        .map(|message| format!("（Nexus：{message}）"))
+        .unwrap_or_default();
+    match status {
+        StatusCode::FORBIDDEN => format!(
+            "Nexus 拒绝生成该文件的 API 直链（HTTP 403）{detail}。常见原因是账号没有 Premium 直链权限，或作者禁止管理器下载；请点击“文件页”在 Nexus 官网继续下载"
+        ),
+        StatusCode::TOO_MANY_REQUESTS => {
+            format!("Nexus 下载请求过于频繁（HTTP 429）{detail}，请稍后重试")
+        }
+        status if status.is_server_error() => format!(
+            "Nexus 下载服务暂时不可用（HTTP {}）{detail}，请稍后重试",
+            status.as_u16()
+        ),
+        _ => format!(
+            "Nexus 无法生成下载地址（HTTP {}）{detail}，请打开官方文件页继续",
+            status.as_u16()
+        ),
+    }
 }
 
 fn credential_entry() -> Result<Entry, String> {
@@ -831,15 +973,16 @@ fn legacy_remote_mod(item: LegacyMod) -> RemoteMod {
     let provider_id = item.mod_id.to_string();
     RemoteMod {
         id: format!("nexus:{provider_id}"),
-        name: item.name,
+        name: non_empty(item.name).unwrap_or_else(|| format!("Nexus Mod #{provider_id}")),
         author: item
             .author
             .or(item.uploaded_by)
+            .and_then(|value| non_empty(Some(value)))
             .unwrap_or_else(|| "Nexus Mods 作者".into()),
-        summary: item.summary.unwrap_or_else(|| "Nexus Mods Mod".into()),
+        summary: non_empty(item.summary).unwrap_or_else(|| "Nexus Mods Mod".into()),
         source: "Nexus Mods".into(),
-        version: item.version.unwrap_or_else(|| "未知".into()),
-        popularity: format!("{} 下载", item.mod_downloads),
+        version: non_empty(item.version).unwrap_or_else(|| "未知".into()),
+        popularity: format!("{} 下载", item.mod_downloads.unwrap_or_default()),
         compatibility: "查看发布说明".into(),
         updated_at: item
             .updated_time
@@ -852,11 +995,82 @@ fn legacy_remote_mod(item: LegacyMod) -> RemoteMod {
     }
 }
 
-fn remote_mod_matches(item: &RemoteMod, query: &str) -> bool {
-    let needle = query.to_lowercase();
-    [&item.name, &item.author, &item.summary]
+fn graphql_search_body(query: &str) -> serde_json::Value {
+    serde_json::json!({
+        "query": SEARCH_MODS_QUERY,
+        "variables": {
+            "filter": {
+                "op": "AND",
+                "filter": [
+                    {
+                        "gameDomainName": [
+                            { "value": "stardewvalley", "op": "EQUALS" }
+                        ]
+                    },
+                    {
+                        "op": "OR",
+                        "filter": [
+                            { "nameStemmed": [{ "value": query, "op": "MATCHES" }] },
+                            { "description": [{ "value": query, "op": "MATCHES" }] },
+                            { "author": [{ "value": query, "op": "MATCHES" }] },
+                            { "uploader": [{ "value": query, "op": "MATCHES" }] }
+                        ]
+                    }
+                ]
+            },
+            "offset": 0,
+            "count": SEARCH_RESULT_LIMIT
+        }
+    })
+}
+
+fn graphql_remote_mod(item: GraphqlMod) -> RemoteMod {
+    let provider_id = item.mod_id.to_string();
+    let author = non_empty(item.author)
+        .or_else(|| item.uploader.and_then(|uploader| non_empty(uploader.name)))
+        .unwrap_or_else(|| "Nexus Mods 作者".into());
+    let updated_at = non_empty(item.updated_at)
+        .or_else(|| non_empty(item.created_at))
+        .map(|value| value.chars().take(10).collect())
+        .unwrap_or_else(|| "最近更新".into());
+    let downloads = item.downloads.unwrap_or_default();
+    let endorsements = item.endorsements.unwrap_or_default();
+    RemoteMod {
+        id: format!("nexus:{provider_id}"),
+        name: non_empty(item.name).unwrap_or_else(|| format!("Nexus Mod #{provider_id}")),
+        author,
+        summary: non_empty(item.summary).unwrap_or_else(|| "Nexus Mods Mod".into()),
+        source: "Nexus Mods".into(),
+        version: non_empty(item.version).unwrap_or_else(|| "未知".into()),
+        popularity: if downloads > 0 {
+            format!("{downloads} 下载")
+        } else {
+            format!("{endorsements} 认可")
+        },
+        compatibility: "查看发布说明".into(),
+        updated_at,
+        page_url: format!("https://www.nexusmods.com/stardewvalley/mods/{provider_id}"),
+        download_url: None,
+        image_url: non_empty(item.picture_url).or_else(|| non_empty(item.thumbnail_url)),
+        provider_id: Some(provider_id),
+    }
+}
+
+fn graphql_error_detail(errors: &[GraphqlError]) -> Option<String> {
+    let detail = errors
         .iter()
-        .any(|value| value.to_lowercase().contains(&needle))
+        .filter_map(|error| non_empty(Some(error.message.clone())))
+        .take(2)
+        .collect::<Vec<_>>()
+        .join("；");
+    (!detail.is_empty()).then(|| detail.chars().take(MAX_PROVIDER_ERROR_CHARS).collect())
+}
+
+fn non_empty(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
 }
 
 fn file_name_from_content_disposition(value: &str) -> Option<String> {
@@ -982,27 +1196,89 @@ mod tests {
     }
 
     #[test]
-    fn nexus_list_search_matches_name_author_and_summary_case_insensitively() {
-        let item = RemoteMod {
-            id: "nexus:1".into(),
-            name: "Content Patcher".into(),
-            author: "Pathoschild".into(),
-            summary: "Loads content packs without replacing files".into(),
-            source: "Nexus Mods".into(),
-            version: "2.0".into(),
-            popularity: "100 下载".into(),
-            compatibility: "查看发布说明".into(),
-            updated_at: "2026-01-01".into(),
-            page_url: "https://www.nexusmods.com/stardewvalley/mods/1".into(),
-            download_url: None,
-            image_url: None,
-            provider_id: Some("1".into()),
-        };
+    fn legacy_mod_list_tolerates_null_items_and_nullable_display_fields() {
+        let mut items = serde_json::from_str::<Vec<Option<LegacyMod>>>(
+            r#"[
+                null,
+                {
+                    "mod_id": 5098,
+                    "name": null,
+                    "author": null,
+                    "uploaded_by": "Uploader",
+                    "summary": null,
+                    "picture_url": null,
+                    "version": null,
+                    "mod_downloads": null,
+                    "updated_time": null
+                }
+            ]"#,
+        )
+        .unwrap();
+        let remote = legacy_remote_mod(items.pop().flatten().unwrap());
+        assert_eq!(remote.name, "Nexus Mod #5098");
+        assert_eq!(remote.author, "Uploader");
+        assert_eq!(remote.popularity, "0 下载");
+        assert!(items.pop().flatten().is_none());
+    }
 
-        assert!(remote_mod_matches(&item, "PATCHER"));
-        assert!(remote_mod_matches(&item, "pathos"));
-        assert!(remote_mod_matches(&item, "content packs"));
-        assert!(!remote_mod_matches(&item, "tractor"));
+    #[test]
+    fn graphql_search_body_covers_name_description_author_and_uploader() {
+        let body = graphql_search_body("Tax");
+        let serialized = serde_json::to_string(&body).unwrap();
+        assert!(serialized.contains("stardewvalley"));
+        assert!(serialized.contains("nameStemmed"));
+        assert!(serialized.contains("description"));
+        assert!(serialized.contains("author"));
+        assert!(serialized.contains("uploader"));
+        assert!(serialized.contains("Tax"));
+        assert_eq!(body["variables"]["count"], SEARCH_RESULT_LIMIT);
+    }
+
+    #[test]
+    fn graphql_response_maps_nullable_fields_to_safe_remote_mod_defaults() {
+        let payload = serde_json::from_str::<GraphqlSearchResponse>(
+            r#"{
+                "data": {
+                    "mods": {
+                        "nodes": [{
+                            "modId": 48386,
+                            "name": "Regional Banking and Taxes System",
+                            "summary": null,
+                            "pictureUrl": null,
+                            "thumbnailUrl": "https://staticdelivery.nexusmods.com/thumb.png",
+                            "endorsements": 1,
+                            "downloads": 153,
+                            "version": "1",
+                            "author": null,
+                            "updatedAt": "2026-07-03T11:58:26Z",
+                            "createdAt": "2026-07-03T11:58:26Z",
+                            "uploader": {"name": "dark8807"}
+                        }]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let remote = graphql_remote_mod(
+            payload
+                .data
+                .and_then(|data| data.mods)
+                .and_then(|mods| mods.nodes.into_iter().flatten().next())
+                .unwrap(),
+        );
+        assert_eq!(remote.author, "dark8807");
+        assert_eq!(remote.summary, "Nexus Mods Mod");
+        assert_eq!(remote.popularity, "153 下载");
+        assert_eq!(remote.updated_at, "2026-07-03");
+        assert_eq!(remote.provider_id.as_deref(), Some("48386"));
+    }
+
+    #[test]
+    fn forbidden_download_link_error_explains_official_file_page_fallback() {
+        let error = download_link_error(StatusCode::FORBIDDEN, Some("premium required"));
+        assert!(error.contains("HTTP 403"));
+        assert!(error.contains("Premium"));
+        assert!(error.contains("文件页"));
     }
 
     #[test]
@@ -1030,5 +1306,16 @@ mod tests {
         assert!(error.contains("Personal API Key"));
         assert!(error.contains("HTTP 401") || error.contains("HTTP 403"));
         assert!(!error.contains(&key));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires live access to the public Nexus Mods GraphQL API"]
+    async fn graphql_search_returns_live_tax_results() {
+        let mods = search("Tax")
+            .await
+            .expect("public GraphQL search should respond");
+        assert!(!mods.is_empty());
+        assert!(mods.iter().all(|item| item.source == "Nexus Mods"));
+        assert!(mods.iter().all(|item| item.provider_id.is_some()));
     }
 }

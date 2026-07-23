@@ -49,7 +49,7 @@ export async function scanGamePath(gamePath: string): Promise<Dashboard> {
 }
 
 export async function getSteamStatus(): Promise<SteamStatus> {
-  if (!isTauri()) return { running: true };
+  if (!isTauri()) return { running: false };
   return invoke<SteamStatus>("get_steam_status");
 }
 
@@ -349,13 +349,6 @@ export async function searchRemoteMods(
       result.issues.push({ source: sourceName, kind: "error", message: String(item.reason) });
     }
   });
-  if (request.source === "all" || request.source === "nexus") {
-    result.issues.push({
-      source: "Nexus Mods",
-      kind: "warning",
-      message: "浏览器预览无法读取系统凭据，仅在 Nexus 官方公开趋势榜中匹配；正式应用会使用设置中的 Personal API Key 扩展到热门、最近更新和最近新增列表。",
-    });
-  }
   return result;
 }
 
@@ -404,29 +397,91 @@ async function searchGithubMods(query: string): Promise<RemoteMod[]> {
 }
 
 async function searchPublicNexusMods(query: string): Promise<RemoteMod[]> {
-  const response = await fetch("https://api.nexusmods.com/v3/games/stardewvalley/trending-mods", {
-    headers: { Accept: "application/json" },
+  const graphqlQuery = `
+    query SearchMods($filter: ModsFilter, $offset: Int, $count: Int) {
+      mods(filter: $filter, offset: $offset, count: $count) {
+        nodes {
+          modId name summary pictureUrl thumbnailUrl endorsements downloads
+          version author updatedAt createdAt uploader { name }
+        }
+      }
+    }
+  `;
+  const response = await fetch("https://api.nexusmods.com/v2/graphql", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "Application-Name": "Valley-Steward",
+      "Application-Version": "0.1",
+    },
+    body: JSON.stringify({
+      query: graphqlQuery,
+      variables: {
+        filter: {
+          op: "AND",
+          filter: [
+            { gameDomainName: [{ value: "stardewvalley", op: "EQUALS" }] },
+            {
+              op: "OR",
+              filter: [
+                { nameStemmed: [{ value: query, op: "MATCHES" }] },
+                { description: [{ value: query, op: "MATCHES" }] },
+                { author: [{ value: query, op: "MATCHES" }] },
+                { uploader: [{ value: query, op: "MATCHES" }] },
+              ],
+            },
+          ],
+        },
+        offset: 0,
+        count: 24,
+      },
+    }),
   });
   if (!response.ok) throw new Error(`Nexus Mods 搜索请求失败：HTTP ${response.status}`);
   const data = await response.json() as {
-    data: { mods: Array<{ name: string; author?: string; summary?: string; picture_url?: string; mod_page_url: string }> };
+    data?: {
+      mods?: {
+        nodes?: Array<{
+          modId: number;
+          name?: string;
+          summary?: string;
+          pictureUrl?: string;
+          thumbnailUrl?: string;
+          endorsements?: number;
+          downloads?: number;
+          version?: string;
+          author?: string;
+          updatedAt?: string;
+          createdAt?: string;
+          uploader?: { name?: string };
+        } | null>;
+      };
+    };
+    errors?: Array<{ message?: string }>;
   };
-  const needle = query.toLocaleLowerCase();
-  return data.data.mods
-    .filter((mod) => `${mod.name} ${mod.author ?? ""} ${mod.summary ?? ""}`.toLocaleLowerCase().includes(needle))
+  const nodes = data.data?.mods?.nodes;
+  if (!nodes) {
+    const detail = data.errors?.map((error) => error.message).filter(Boolean).join("；");
+    throw new Error(detail ? `Nexus Mods 搜索失败：${detail}` : "Nexus Mods 搜索未返回结果数据");
+  }
+  return nodes
+    .filter((mod): mod is NonNullable<typeof mod> => mod !== null)
     .map((mod): RemoteMod => ({
-      id: `nexus:${mod.mod_page_url}`,
-      name: mod.name,
-      author: mod.author ?? "Nexus Mods 作者",
-      summary: mod.summary ?? "Nexus Mods 热门 Mod",
+      id: `nexus:${mod.modId}`,
+      name: mod.name?.trim() || `Nexus Mod #${mod.modId}`,
+      author: mod.author?.trim() || mod.uploader?.name?.trim() || "Nexus Mods 作者",
+      summary: mod.summary?.trim() || "Nexus Mods Mod",
       source: "Nexus Mods",
-      version: "热门",
-      popularity: "趋势榜",
+      version: mod.version?.trim() || "未知",
+      popularity: mod.downloads
+        ? `${mod.downloads} 下载`
+        : `${mod.endorsements ?? 0} 认可`,
       compatibility: "查看发布说明",
-      updatedAt: "实时",
-      pageUrl: mod.mod_page_url,
-      imageUrl: mod.picture_url,
-      providerId: mod.mod_page_url.split("/").filter(Boolean).at(-1),
+      updatedAt: (mod.updatedAt ?? mod.createdAt ?? "最近更新").slice(0, 10),
+      pageUrl: `https://www.nexusmods.com/stardewvalley/mods/${mod.modId}`,
+      imageUrl: mod.pictureUrl ?? mod.thumbnailUrl,
+      providerId: String(mod.modId),
     }));
 }
 

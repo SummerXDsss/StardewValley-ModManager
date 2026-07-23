@@ -572,7 +572,7 @@ mod tests {
             "Description": description,
             "Author": "Test Author",
             "Version": version,
-            "UniqueID": "Test.Author.ExampleMod",
+            "UniqueId": "Test.Author.ExampleMod",
             "Dependencies": []
         });
         fs::write(

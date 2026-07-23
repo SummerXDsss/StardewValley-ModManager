@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { Button, Input, Segmented } from "antd";
-import { ReloadOutlined, SearchOutlined } from "@ant-design/icons";
+import { Button, Input, Tab, TabList } from "@fluentui/react-components";
+import { ArrowClockwise20Regular, Search20Regular } from "@fluentui/react-icons";
 import { PageTitle, ModTable } from "../shared";
 import type { Dashboard, InstalledMod } from "../../types";
 
@@ -47,14 +47,19 @@ export function ModsPage({
       <PageTitle title="我的 Mod" subtitle={`${dashboard.mods.length} 个已安装，${enabled} 个正在启用`} />
       <div className="toolbar">
         <Input
-          prefix={<SearchOutlined />}
+          contentBefore={<Search20Regular />}
           placeholder="搜索名称、作者或唯一 ID"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          allowClear
+          onChange={(_, data) => setQuery(data.value)}
         />
-        <Segmented options={["全部", "已启用", "已禁用", "可更新"]} value={filter} onChange={(value) => setFilter(String(value))} />
-        <Button icon={<ReloadOutlined />} onClick={onRefresh}>
+        <TabList
+          size="small"
+          selectedValue={filter}
+          onTabSelect={(_, data) => setFilter(String(data.value))}
+        >
+          {["全部", "已启用", "已禁用", "可更新"].map((label) => <Tab key={label} value={label}>{label}</Tab>)}
+        </TabList>
+        <Button icon={<ArrowClockwise20Regular />} onClick={onRefresh}>
           重新扫描
         </Button>
       </div>

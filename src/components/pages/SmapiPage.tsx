@@ -1,13 +1,22 @@
 import { useEffect, useState } from "react";
-import { Alert, App, Button, Space, Tag } from "antd";
 import {
-  DeleteOutlined,
-  ExportOutlined,
-  ReloadOutlined,
-  RocketOutlined,
-  SafetyCertificateOutlined,
-} from "@ant-design/icons";
-import { PageTitle } from "../shared";
+  Badge,
+  Button,
+  MessageBar,
+  MessageBarActions,
+  MessageBarBody,
+  MessageBarTitle,
+  Spinner,
+} from "@fluentui/react-components";
+import {
+  ArrowClockwise20Regular,
+  Delete20Regular,
+  Dismiss20Regular,
+  Open20Regular,
+  Rocket20Regular,
+  ShieldCheckmark24Regular,
+} from "@fluentui/react-icons";
+import { PageTitle, useAppUi } from "../shared";
 import { getLatestSmapiRelease, installLatestSmapi, uninstallSmapi } from "../../api";
 import type { Dashboard, InstalledSmapiResult, SmapiReleaseInfo } from "../../types";
 import { compareSemver } from "../../utils/semver";
@@ -33,7 +42,7 @@ export function SmapiPage({
   onOpenSmapiDownload,
   onDashboardRefresh,
 }: SmapiPageProps) {
-  const { message, modal } = App.useApp();
+  const { confirm, notify } = useAppUi();
   const [release, setRelease] = useState<SmapiReleaseInfo>();
   const [releaseLoading, setReleaseLoading] = useState(true);
   const [releaseError, setReleaseError] = useState<string>();
@@ -68,17 +77,16 @@ export function SmapiPage({
   const confirmInstall = () => {
     const gamePath = dashboard.installation?.path;
     if (!gamePath) {
-      message.warning("请先设置有效的游戏目录");
+      notify("warning", "请先设置有效的游戏目录");
       return;
     }
     if (gameRunning) {
-      message.warning("请先关闭游戏，再安装或更新 SMAPI");
+      notify("warning", "请先关闭游戏，再安装或更新 SMAPI");
       return;
     }
 
-    modal.confirm({
+    confirm({
       title: `${dashboard.smapi.installed ? "更新" : "安装"} SMAPI ${release?.version ?? "最新稳定版"}`,
-      icon: <SafetyCertificateOutlined />,
       content: (
         <div className="smapi-install-confirm">
           <p>安装程序会下载、解压并修改 Stardew Valley 游戏目录中的 SMAPI 文件。</p>
@@ -86,10 +94,9 @@ export function SmapiPage({
           <p>继续前请确认游戏已经关闭，并保留现有 Mods 与配置的备份。</p>
         </div>
       ),
-      okText: dashboard.smapi.installed ? "确认更新" : "确认安装",
-      cancelText: "取消",
-      okButtonProps: { disabled: installing },
-      onOk: async () => {
+      confirmLabel: dashboard.smapi.installed ? "确认更新" : "确认安装",
+      cancelLabel: "取消",
+      onConfirm: async () => {
         setInstalling(true);
         setInstallError(undefined);
         setUninstallError(undefined);
@@ -104,11 +111,11 @@ export function SmapiPage({
           }
           const confirmedVersion = refreshed.smapi.version ?? result.version;
           setInstalledResult({ ...result, version: confirmedVersion });
-          message.success(`SMAPI ${confirmedVersion} 已安装`);
+          notify("success", `SMAPI ${confirmedVersion} 已安装`);
         } catch (error) {
           const detail = String(error);
           setInstallError(detail);
-          message.error(detail);
+          notify("error", "SMAPI 安装未完成", detail);
         } finally {
           setInstalling(false);
         }
@@ -119,17 +126,16 @@ export function SmapiPage({
   const confirmUninstall = () => {
     const gamePath = dashboard.installation?.path;
     if (!gamePath) {
-      message.warning("请先设置有效的游戏目录");
+      notify("warning", "请先设置有效的游戏目录");
       return;
     }
     if (gameRunning) {
-      message.warning("请先关闭游戏，再卸载 SMAPI");
+      notify("warning", "请先关闭游戏，再卸载 SMAPI");
       return;
     }
 
-    modal.confirm({
+    confirm({
       title: "卸载 SMAPI？",
-      icon: <DeleteOutlined />,
       content: (
         <div className="smapi-install-confirm">
           <p>将运行 SMAPI 官方卸载器并移除游戏目录中的加载器文件。</p>
@@ -137,10 +143,10 @@ export function SmapiPage({
           <p>用户 Mods 将按官方卸载器行为保留；卸载前仍建议备份重要配置。</p>
         </div>
       ),
-      okText: "卸载 SMAPI",
-      cancelText: "取消",
-      okButtonProps: { danger: true },
-      onOk: async () => {
+      confirmLabel: "卸载 SMAPI",
+      cancelLabel: "取消",
+      destructive: true,
+      onConfirm: async () => {
         setUninstalling(true);
         setInstallError(undefined);
         setUninstallError(undefined);
@@ -154,13 +160,16 @@ export function SmapiPage({
             throw new Error("卸载程序已结束，但重新扫描后仍检测到 SMAPI");
           }
           setInstalledResult(undefined);
-          message.success(result.version
-            ? `SMAPI ${result.version} 已卸载，用户 Mods 已保留`
-            : "SMAPI 已卸载，用户 Mods 已保留");
+          notify(
+            "success",
+            result.version
+              ? `SMAPI ${result.version} 已卸载，用户 Mods 已保留`
+              : "SMAPI 已卸载，用户 Mods 已保留",
+          );
         } catch (error) {
           const detail = String(error);
           setUninstallError(detail);
-          message.error(detail);
+          notify("error", "SMAPI 卸载未完成", detail);
         } finally {
           setUninstalling(false);
         }
@@ -181,43 +190,67 @@ export function SmapiPage({
       {(releaseError || installError || uninstallError) && (
         <div className="smapi-alerts">
           {releaseError && (
-            <Alert
-              type="warning"
-              showIcon
-              message="无法读取 SMAPI 官方 Release"
-              description={releaseError}
-              action={<Button icon={<ReloadOutlined />} onClick={() => void loadRelease()}>重试</Button>}
-            />
+            <MessageBar intent="warning">
+              <MessageBarBody>
+                <MessageBarTitle>无法读取 SMAPI 官方 Release</MessageBarTitle>
+                {releaseError}
+              </MessageBarBody>
+              <MessageBarActions>
+                <Button
+                  appearance="transparent"
+                  icon={<ArrowClockwise20Regular />}
+                  onClick={() => void loadRelease()}
+                >
+                  重试
+                </Button>
+              </MessageBarActions>
+            </MessageBar>
           )}
           {installError && (
-            <Alert
-              type="error"
-              showIcon
-              closable
-              message="SMAPI 安装未完成"
-              description={installError}
-              onClose={() => setInstallError(undefined)}
-            />
+            <MessageBar intent="error">
+              <MessageBarBody>
+                <MessageBarTitle>SMAPI 安装未完成</MessageBarTitle>
+                {installError}
+              </MessageBarBody>
+              <MessageBarActions
+                containerAction={(
+                  <Button
+                    appearance="transparent"
+                    icon={<Dismiss20Regular />}
+                    aria-label="关闭 SMAPI 安装错误"
+                    onClick={() => setInstallError(undefined)}
+                  />
+                )}
+              />
+            </MessageBar>
           )}
           {uninstallError && (
-            <Alert
-              type="error"
-              showIcon
-              closable
-              message="SMAPI 卸载未完成"
-              description={uninstallError}
-              onClose={() => setUninstallError(undefined)}
-            />
+            <MessageBar intent="error">
+              <MessageBarBody>
+                <MessageBarTitle>SMAPI 卸载未完成</MessageBarTitle>
+                {uninstallError}
+              </MessageBarBody>
+              <MessageBarActions
+                containerAction={(
+                  <Button
+                    appearance="transparent"
+                    icon={<Dismiss20Regular />}
+                    aria-label="关闭 SMAPI 卸载错误"
+                    onClick={() => setUninstallError(undefined)}
+                  />
+                )}
+              />
+            </MessageBar>
           )}
         </div>
       )}
       <div className="smapi-panel">
-        <SafetyCertificateOutlined className="smapi-mark" />
+        <ShieldCheckmark24Regular className="smapi-mark" />
         <div>
-          <Tag color={smapiInstalled ? "green" : "red"}>
+          <Badge appearance="tint" color={smapiInstalled ? "success" : "danger"}>
             {smapiInstalled ? "已安装" : "未安装"}
-          </Tag>
-          {updateAvailable && <Tag color="gold">可更新</Tag>}
+          </Badge>
+          {updateAvailable && <Badge appearance="tint" color="warning">可更新</Badge>}
           <h2>
             {smapiInstalled
               ? `SMAPI ${installedVersion ?? "版本未知"}`
@@ -231,11 +264,11 @@ export function SmapiPage({
               ?? (releaseError ? "官方稳定版本读取失败，请重试" : "正在读取官方稳定版本...")}
           </p>
         </div>
-        <Space direction="vertical" align="end" size={8}>
+        <div className="smapi-actions">
           {dashboard.smapi.installed && (
             <Button
-              type="primary"
-              icon={<RocketOutlined />}
+              appearance="primary"
+              icon={<Rocket20Regular />}
               disabled={gameRunning || installing || uninstalling}
               onClick={onLaunchSmapi}
             >
@@ -243,9 +276,8 @@ export function SmapiPage({
             </Button>
           )}
           <Button
-            type={smapiInstalled ? "default" : "primary"}
-            icon={<SafetyCertificateOutlined />}
-            loading={installing}
+            appearance={smapiInstalled ? "secondary" : "primary"}
+            icon={installing ? <Spinner size="tiny" /> : <ShieldCheckmark24Regular />}
             disabled={installing || uninstalling || releaseLoading || !dashboard.installation || gameRunning}
             aria-label={smapiInstalled ? "安装或更新 SMAPI" : "安装 SMAPI"}
             onClick={confirmInstall}
@@ -254,9 +286,9 @@ export function SmapiPage({
           </Button>
           {dashboard.smapi.installed && (
             <Button
-              danger
-              icon={<DeleteOutlined />}
-              loading={uninstalling}
+              appearance="secondary"
+              className="danger-button"
+              icon={uninstalling ? <Spinner size="tiny" /> : <Delete20Regular />}
               disabled={installing || uninstalling || gameRunning}
               aria-label="卸载 SMAPI 并保留用户 Mods"
               onClick={confirmUninstall}
@@ -265,11 +297,11 @@ export function SmapiPage({
             </Button>
           )}
           {(releaseError || installError || uninstallError) && (
-            <Button type="link" icon={<ExportOutlined />} onClick={onOpenSmapiDownload}>
+            <Button appearance="subtle" icon={<Open20Regular />} onClick={onOpenSmapiDownload}>
               打开官方页面
             </Button>
           )}
-        </Space>
+        </div>
       </div>
       <div className="info-list">
         <div>

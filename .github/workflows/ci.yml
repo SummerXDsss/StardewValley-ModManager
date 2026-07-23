@@ -18,6 +18,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - if: runner.os == 'Windows'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -43,3 +47,33 @@ jobs:
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo check --manifest-path src-tauri/Cargo.toml
       - run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+      - name: Restore WinUI 3
+        if: runner.os == 'Windows'
+        run: dotnet restore ValleySteward.sln --configfile NuGet.Config --runtime win-x64
+      - name: Build WinUI 3
+        if: runner.os == 'Windows'
+        run: dotnet build ValleySteward.sln -c Release --no-restore
+      - name: Run WinUI service smoke tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          & .\src-winui\ValleySteward.WinUI.Smoke\bin\Release\net8.0-windows10.0.19041.0\win-x64\ValleySteward.WinUI.Smoke.exe
+      - name: Verify WinUI self-contained publish
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          dotnet publish .\src-winui\ValleySteward.WinUI\ValleySteward.WinUI.csproj `
+            -c Release --no-restore -o .\output\winui-native
+          $required = @(
+            'App.xbf',
+            'MainWindow.xbf',
+            'ValleySteward.WinUI.pri',
+            'Pages\OverviewPage.xbf',
+            'ValleySteward.WinUI.exe',
+            'hostfxr.dll'
+          )
+          foreach ($file in $required) {
+            if (-not (Test-Path (Join-Path '.\output\winui-native' $file))) {
+              throw "Published WinUI resource is missing: $file"
+            }
+          }

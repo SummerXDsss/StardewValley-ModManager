@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { getSteamStatus } from "../api";
+import type { SteamStatus } from "../types";
 
 const POLL_INTERVAL_MS = 5_000;
 
 export function useSteamStatus() {
-  const [running, setRunning] = useState(false);
+  const [status, setStatus] = useState<SteamStatus>({ running: false });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const inFlight = useRef(false);
@@ -16,13 +17,13 @@ export function useSteamStatus() {
       if (inFlight.current) return;
       inFlight.current = true;
       try {
-        const status = await getSteamStatus();
+        const nextStatus = await getSteamStatus();
         if (!active) return;
-        setRunning(status.running);
+        setStatus(nextStatus);
         setError(undefined);
       } catch (nextError) {
         if (active) {
-          setRunning(false);
+          setStatus({ running: false });
           setError(String(nextError));
         }
       } finally {
@@ -39,5 +40,11 @@ export function useSteamStatus() {
     };
   }, []);
 
-  return { running, loading, error };
+  return {
+    status,
+    running: status.running,
+    identity: status.identity,
+    loading,
+    error,
+  };
 }

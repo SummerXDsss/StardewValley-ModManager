@@ -1,7 +1,33 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, App, Button, Input, Select, Space, Switch, Tag } from "antd";
-import { ApiOutlined, ExportOutlined, FolderOpenOutlined, ReloadOutlined } from "@ant-design/icons";
-import { PageTitle } from "../shared";
+import {
+  Badge,
+  Button,
+  Combobox,
+  Dropdown,
+  Field,
+  Input,
+  MessageBar,
+  MessageBarActions,
+  MessageBarBody,
+  MessageBarTitle,
+  Option,
+  Spinner,
+  Switch,
+  Tag,
+  TagGroup,
+} from "@fluentui/react-components";
+import {
+  AddRegular,
+  ArrowSyncRegular,
+  DeleteRegular,
+  DismissRegular,
+  FolderOpenRegular,
+  KeyRegular,
+  OpenRegular,
+  SaveRegular,
+  SendRegular,
+} from "@fluentui/react-icons";
+import { PageTitle, useAppUi } from "../shared";
 import {
   chooseGameDirectory,
   clearAiTranslationSettings,
@@ -50,6 +76,116 @@ const SMAPI_LAUNCH_ARGUMENT_OPTIONS = [
   { value: "--use-current-shell", label: "--use-current-shell · 使用当前 Shell（macOS/Linux）" },
 ];
 
+interface LaunchArgumentEditorProps {
+  target: LaunchTarget;
+  label: string;
+  argumentsList: string[];
+  presets?: typeof SMAPI_LAUNCH_ARGUMENT_OPTIONS;
+  onChange: (target: LaunchTarget, argumentsList: string[]) => void;
+  onInvalid: (message: string) => void;
+}
+
+function LaunchArgumentEditor({
+  target,
+  label,
+  argumentsList,
+  presets = [],
+  onChange,
+  onInvalid,
+}: LaunchArgumentEditorProps) {
+  const [draft, setDraft] = useState("");
+
+  const addArgument = (value: string) => {
+    if (!value.trim()) return;
+    if (value.length > 512) {
+      onInvalid("单个启动参数不能超过 512 个字符");
+      return;
+    }
+    if (argumentsList.length >= 32) {
+      onInvalid("每种启动方式最多保存 32 个参数");
+      return;
+    }
+    onChange(target, [...argumentsList, value]);
+    setDraft("");
+  };
+
+  return (
+    <div className="launch-argument-editor">
+      <div className="launch-argument-editor-header">
+        <Badge appearance="tint" color={target === "smapi" ? "success" : "subtle"}>{label}</Badge>
+        <div>
+          <span>{argumentsList.length} / 32</span>
+          {argumentsList.length > 0 && (
+            <Button
+              appearance="transparent"
+              size="small"
+              icon={<DismissRegular />}
+              onClick={() => onChange(target, [])}
+            >
+              清空
+            </Button>
+          )}
+        </div>
+      </div>
+      <div className="launch-argument-inputs">
+        {presets.length > 0 && (
+          <Dropdown
+            aria-label={`${label} 参数预设`}
+            value="选择预设参数"
+            selectedOptions={[]}
+            disabled={argumentsList.length >= 32}
+            onOptionSelect={(_, data) => {
+              if (data.optionValue) addArgument(data.optionValue);
+            }}
+          >
+            {presets.map((preset) => (
+              <Option
+                key={preset.value}
+                value={preset.value}
+                text={preset.label}
+              >
+                {preset.label}
+              </Option>
+            ))}
+          </Dropdown>
+        )}
+        <Input
+          value={draft}
+          aria-label={`手动添加${label}启动参数`}
+          placeholder={target === "smapi" ? "手动输入 SMAPI 参数" : "手动输入原版游戏参数"}
+          onChange={(_, data) => setDraft(data.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              addArgument(draft);
+            }
+          }}
+        />
+        <Button icon={<AddRegular />} disabled={!draft.trim()} onClick={() => addArgument(draft)}>
+          添加
+        </Button>
+      </div>
+      {argumentsList.length > 0 ? (
+        <TagGroup
+          className="launch-argument-tags"
+          dismissible
+          aria-label={`${label} 启动参数`}
+          onDismiss={(_, data) => {
+            const index = Number(data.value);
+            onChange(target, argumentsList.filter((_, argumentIndex) => argumentIndex !== index));
+          }}
+        >
+          {argumentsList.map((argument, index) => (
+            <Tag key={`${argument}:${index}`} value={String(index)}>{argument}</Tag>
+          ))}
+        </TagGroup>
+      ) : (
+        <span className="launch-argument-empty">未添加参数</span>
+      )}
+    </div>
+  );
+}
+
 function githubDownloadChoiceFor(settings: GithubDownloadSettings): GithubDownloadChoice {
   if (settings.mode === "direct") return "direct";
   return settings.customPrefix === GITHUB_PROXY_PRESET ? "gh-proxy" : "custom";
@@ -74,6 +210,11 @@ function usesPlainHttp(value: string) {
 
 function redactTranslationSecret(value: string, apiKey: string) {
   return apiKey ? value.split(apiKey).join("[已隐藏]") : value;
+}
+
+function formatRequestError(error: unknown) {
+  const detail = error instanceof Error ? error.message : String(error);
+  return detail.replace(/^(?:Error:\s*)+/i, "").trim() || "请求失败";
 }
 
 function translationRequestPreview(
@@ -119,7 +260,7 @@ export function SettingsPage({
   launchArguments,
   onLaunchArgumentsChange,
 }: SettingsPageProps) {
-  const { message } = App.useApp();
+  const { notify } = useAppUi();
   const [pathInput, setPathInput] = useState(
     dashboard.installation ? formatDisplayPath(dashboard.installation.path) : "",
   );
@@ -135,6 +276,7 @@ export function SettingsPage({
   });
   const [translationBaseUrl, setTranslationBaseUrl] = useState("");
   const [translationModelId, setTranslationModelId] = useState("");
+  const [translationModelPickerValue, setTranslationModelPickerValue] = useState("");
   const [translationApiKey, setTranslationApiKey] = useState("");
   const [translationStatusLoading, setTranslationStatusLoading] = useState(true);
   const [translationMutation, setTranslationMutation] = useState<"saving" | "clearing" | null>(null);
@@ -192,10 +334,10 @@ export function SettingsPage({
         setTranslationBaseUrl(status.baseUrl ?? "");
         setTranslationModelId(status.modelId ?? "");
       })
-      .catch((error) => message.error(String(error)))
+      .catch((error) => notify("error", "无法读取 AI 翻译配置", String(error)))
       .finally(() => setTranslationStatusLoading(false));
     void loadGithubSettings();
-  }, [loadGithubSettings, loadNexusStatus]);
+  }, [loadGithubSettings, loadNexusStatus, notify]);
 
   useEffect(() => {
     setPathInput(dashboard.installation ? formatDisplayPath(dashboard.installation.path) : "");
@@ -206,9 +348,9 @@ export function SettingsPage({
     try {
       const newDashboard = await onScanPath(pathInput);
       onDashboardUpdate(newDashboard);
-      message.success("路径有效");
+      notify("success", "路径有效");
     } catch (e) {
-      message.error(String(e));
+      notify("error", "游戏目录验证失败", String(e));
     } finally {
       onLoadingChange(false);
     }
@@ -235,11 +377,11 @@ export function SettingsPage({
       }
       setNexusConfigured(true);
       setNexusKey("");
-      message.success("Nexus API Key 已验证并保存到系统凭据库");
+      notify("success", "Nexus API Key 已验证并安全保存");
     } catch (error) {
       const detail = String(error);
       setNexusError(detail);
-      message.error(detail);
+      notify("error", "Nexus API Key 保存失败", detail);
     } finally {
       nexusMutationRef.current = false;
       setNexusMutation(null);
@@ -255,11 +397,11 @@ export function SettingsPage({
       const status = await clearNexusApiKey();
       setNexusConfigured(status.configured);
       setNexusKey("");
-      message.success("Nexus API Key 已清除");
+      notify("success", "Nexus API Key 已清除");
     } catch (error) {
       const detail = String(error);
       setNexusError(detail);
-      message.error(detail);
+      notify("error", "Nexus API Key 清除失败", detail);
     } finally {
       nexusMutationRef.current = false;
       setNexusMutation(null);
@@ -272,7 +414,7 @@ export function SettingsPage({
     } catch (error) {
       const detail = String(error);
       setNexusError(detail);
-      message.error(detail);
+      notify("error", "无法打开 Nexus 设置页", detail);
     }
   };
 
@@ -295,20 +437,23 @@ export function SettingsPage({
         apiKey: apiKey || undefined,
       });
       setTranslationModels(result.models);
+      setTranslationModelPickerValue(
+        result.models.some((model) => model.id === translationModelId) ? translationModelId : "",
+      );
       setTranslationRequestActivity({
         phase: "success",
         request: result.request,
         response: result.response,
       });
       if (result.models.length === 0) {
-        message.warning("接口未返回可用模型，仍可手动填写 Model ID");
+        notify("warning", "接口未返回可用模型", "仍可手动填写 Model ID。");
       } else {
-        message.success(`已获取 ${result.models.length} 个模型`);
+        notify("success", `已获取 ${result.models.length} 个模型`);
       }
     } catch (error) {
-      const detail = String(error);
+      const detail = formatRequestError(error);
       setTranslationRequestActivity({ phase: "error", request, error: detail });
-      message.error(detail);
+      notify("error", "模型列表请求失败", detail);
     } finally {
       translationNetworkRef.current = false;
       setTranslationModelsLoading(false);
@@ -340,16 +485,19 @@ export function SettingsPage({
         apiKey: apiKey || undefined,
       });
       setTranslationModelId(result.modelId);
+      setTranslationModelPickerValue(
+        translationModels.some((model) => model.id === result.modelId) ? result.modelId : "",
+      );
       setTranslationRequestActivity({
         phase: "success",
         request: result.request,
         response: result.response,
       });
-      message.success("AI 接口测试成功");
+      notify("success", "AI 接口测试成功");
     } catch (error) {
-      const detail = String(error);
+      const detail = formatRequestError(error);
       setTranslationRequestActivity({ phase: "error", request, error: detail });
-      message.error(detail);
+      notify("error", "AI 接口测试失败", detail);
     } finally {
       translationNetworkRef.current = false;
       setTranslationTestLoading(false);
@@ -370,9 +518,9 @@ export function SettingsPage({
       setTranslationBaseUrl(status.baseUrl ?? translationBaseUrl);
       setTranslationModelId(status.modelId ?? translationModelId);
       setTranslationApiKey("");
-      message.success("AI 翻译配置已保存");
+      notify("success", "AI 翻译配置已保存");
     } catch (error) {
-      message.error(String(error));
+      notify("error", "AI 翻译配置保存失败", String(error));
     } finally {
       translationMutationRef.current = false;
       setTranslationMutation(null);
@@ -388,12 +536,13 @@ export function SettingsPage({
       setTranslationStatus(status);
       setTranslationBaseUrl("");
       setTranslationModelId("");
+      setTranslationModelPickerValue("");
       setTranslationApiKey("");
       setTranslationModels([]);
       setTranslationRequestActivity(undefined);
-      message.success("AI 翻译配置已清除");
+      notify("success", "AI 翻译配置已清除");
     } catch (error) {
-      message.error(String(error));
+      notify("error", "AI 翻译配置清除失败", String(error));
     } finally {
       translationMutationRef.current = false;
       setTranslationMutation(null);
@@ -417,11 +566,11 @@ export function SettingsPage({
       setGithubDownloadStatus(status);
       setGithubDownloadChoice(githubDownloadChoiceFor(status));
       setGithubCustomPrefix(status.customPrefix ?? "");
-      message.success("GitHub 下载设置已保存");
+      notify("success", "GitHub 下载设置已保存");
     } catch (error) {
       const detail = String(error);
       setGithubDownloadError(detail);
-      message.error(detail);
+      notify("error", "GitHub 下载设置保存失败", detail);
     } finally {
       githubDownloadMutationRef.current = false;
       setGithubDownloadMutation(null);
@@ -438,11 +587,11 @@ export function SettingsPage({
       setGithubDownloadStatus(status);
       setGithubDownloadChoice("direct");
       setGithubCustomPrefix("");
-      message.success("已清除镜像设置并恢复 GitHub 直连");
+      notify("success", "已恢复 GitHub 直连");
     } catch (error) {
       const detail = String(error);
       setGithubDownloadError(detail);
-      message.error(detail);
+      notify("error", "GitHub 下载设置清除失败", detail);
     } finally {
       githubDownloadMutationRef.current = false;
       setGithubDownloadMutation(null);
@@ -451,7 +600,11 @@ export function SettingsPage({
 
   const updateArguments = (target: LaunchTarget, argumentsList: string[]) => {
     if (argumentsList.some((argument) => argument.length > 512)) {
-      message.warning("单个启动参数不能超过 512 个字符");
+      notify("warning", "启动参数未保存", "单个启动参数不能超过 512 个字符。");
+      return;
+    }
+    if (argumentsList.length > 32) {
+      notify("warning", "启动参数未保存", "每种启动方式最多保存 32 个参数。");
       return;
     }
     onLaunchArgumentsChange(target, argumentsList);
@@ -460,17 +613,22 @@ export function SettingsPage({
   const updateTranslationBaseUrl = (value: string) => {
     setTranslationBaseUrl(value);
     setTranslationModels([]);
+    setTranslationModelPickerValue("");
     setTranslationRequestActivity(undefined);
   };
 
   const updateTranslationApiKey = (value: string) => {
     setTranslationApiKey(value);
     setTranslationModels([]);
+    setTranslationModelPickerValue("");
     setTranslationRequestActivity(undefined);
   };
 
   const updateTranslationModelId = (value: string) => {
     setTranslationModelId(value);
+    setTranslationModelPickerValue(
+      translationModels.some((model) => model.id === value) ? value : "",
+    );
     setTranslationRequestActivity(undefined);
   };
 
@@ -483,71 +641,76 @@ export function SettingsPage({
       && hasSameOrigin(translationStatus.baseUrl, translationBaseUrl));
   const translationProviderReady = Boolean(translationBaseUrl.trim())
     && translationCredentialAvailable;
-  const translationModelOptions = translationModels.map((model) => ({
-    value: model.id,
-    label: (
-      <div className="ai-model-option">
-        <span>{model.id}</span>
-        {model.ownedBy && <small>{model.ownedBy}</small>}
-      </div>
-    ),
-  }));
   const selectedTranslationModel = translationModels.some((model) => model.id === translationModelId)
     ? translationModelId
     : undefined;
+  const githubDownloadLabel = githubDownloadStatus.mode === "direct"
+    ? "GitHub 直连"
+    : githubDownloadStatus.customPrefix === GITHUB_PROXY_PRESET
+      ? "gh-proxy.com"
+      : "自定义镜像";
+  const githubChoiceLabel = githubDownloadChoice === "direct"
+    ? "GitHub 直连"
+    : githubDownloadChoice === "gh-proxy"
+      ? "gh-proxy.com 镜像"
+      : "自定义 HTTPS 镜像";
+
   return (
     <section>
       <PageTitle title="设置" subtitle="游戏位置、启动方式与安全策略" />
-      <div className="settings-form">
-        <label>游戏目录</label>
-        <Space.Compact block>
-          <Input value={pathInput} onChange={(e) => setPathInput(e.target.value)} />
-          <Button icon={<FolderOpenOutlined />} aria-label="选择游戏目录" onClick={() => void choosePath()} />
-          <Button onClick={handleVerifyPath}>验证并保存</Button>
-        </Space.Compact>
-        <label>启动参数</label>
-        <div className="launch-argument-settings">
-          <div className="launch-argument-row">
-            <Tag color="green">SMAPI</Tag>
-            <Select
-              mode="tags"
-              aria-label="SMAPI 启动参数"
-              value={launchArguments.smapi}
-              maxCount={32}
-              maxTagCount="responsive"
-              options={SMAPI_LAUNCH_ARGUMENT_OPTIONS}
-              optionFilterProp="label"
-              showSearch
-              allowClear
-              placeholder="添加 SMAPI 参数"
-              onChange={(values) => updateArguments("smapi", values)}
+      <div className="settings-form fluent-settings-form">
+        <Field label="游戏目录">
+          <div className="settings-inline-control game-path-setting">
+            <Input
+              value={pathInput}
+              aria-label="Stardew Valley 游戏目录"
+              onChange={(_, data) => setPathInput(data.value)}
+            />
+            <Button
+              icon={<FolderOpenRegular />}
+              aria-label="选择游戏目录"
+              onClick={() => void choosePath()}
+            />
+            <Button appearance="primary" onClick={() => void handleVerifyPath()}>
+              验证并保存
+            </Button>
+          </div>
+        </Field>
+
+        <Field label="启动参数">
+          <div className="launch-argument-settings fluent-launch-argument-settings">
+            <LaunchArgumentEditor
+              target="smapi"
+              label="SMAPI"
+              argumentsList={launchArguments.smapi}
+              presets={SMAPI_LAUNCH_ARGUMENT_OPTIONS}
+              onChange={updateArguments}
+              onInvalid={(detail) => notify("warning", "启动参数未保存", detail)}
+            />
+            <LaunchArgumentEditor
+              target="vanilla"
+              label="原版"
+              argumentsList={launchArguments.vanilla}
+              onChange={updateArguments}
+              onInvalid={(detail) => notify("warning", "启动参数未保存", detail)}
             />
           </div>
-          <div className="launch-argument-row">
-            <Tag>原版</Tag>
-            <Select
-              mode="tags"
-              aria-label="原版启动参数"
-              value={launchArguments.vanilla}
-              maxCount={32}
-              maxTagCount="responsive"
-              options={[]}
-              allowClear
-              placeholder="添加原版游戏参数"
-              onChange={(values) => updateArguments("vanilla", values)}
-            />
+        </Field>
+
+        <Field label="删除策略">
+          <div className="setting-row">
+            <span>Mod 先移动到管理器回收区</span>
+            <Switch defaultChecked aria-label="Mod 先移动到管理器回收区" />
           </div>
-        </div>
-        <label>删除策略</label>
-        <div className="setting-row">
-          <span>Mod 先移动到管理器回收区</span>
-          <Switch defaultChecked />
-        </div>
-        <label>更新策略</label>
-        <div className="setting-row">
-          <span>保留 config.json 与回滚快照</span>
-          <Switch defaultChecked disabled />
-        </div>
+        </Field>
+
+        <Field label="更新策略">
+          <div className="setting-row">
+            <span>保留 config.json 与回滚快照</span>
+            <Switch defaultChecked disabled aria-label="保留 config.json 与回滚快照" />
+          </div>
+        </Field>
+
         <h2 className="settings-section-title">GitHub 下载加速</h2>
         <div className="github-download-setting">
           <div className="nexus-setting-status">
@@ -555,165 +718,185 @@ export function SettingsPage({
               <strong>SMAPI 安装包下载方式</strong>
               <span>仅影响 SMAPI 安装、更新和卸载所需的 GitHub Release 资产；Mod 发布页下载不受影响。</span>
             </div>
-            <Tag color={githubDownloadStatus.mode === "custom" ? "gold" : "default"}>
-              {githubDownloadStatus.mode === "direct"
-                ? "GitHub 直连"
-                : githubDownloadStatus.customPrefix === GITHUB_PROXY_PRESET
-                  ? "gh-proxy.com"
-                  : "自定义镜像"}
-            </Tag>
+            <Badge
+              appearance="tint"
+              color={githubDownloadStatus.mode === "custom" ? "warning" : "subtle"}
+            >
+              {githubDownloadLoading ? "读取中" : githubDownloadLabel}
+            </Badge>
           </div>
-          <Alert
-            type="warning"
-            showIcon
-            message="第三方镜像服务风险"
-            description="自定义镜像会接收 SMAPI 的 GitHub 资产下载地址。请仅使用你信任的 HTTPS 服务；管理器只验证地址格式，不声明服务可用性或安全性。"
-          />
-          <div className="github-download-field">
-            <label htmlFor="github-download-mode">下载模式</label>
-            <Select
+
+          <MessageBar intent="warning" layout="multiline">
+            <MessageBarBody>
+              <MessageBarTitle>第三方镜像服务风险</MessageBarTitle>
+              自定义镜像会接收 SMAPI 的 GitHub 资产下载地址。请仅使用你信任的 HTTPS 服务；管理器只验证地址格式，不声明服务可用性或安全性。
+            </MessageBarBody>
+          </MessageBar>
+
+          <Field label="下载模式">
+            <Dropdown
               id="github-download-mode"
-              value={githubDownloadChoice}
-              loading={githubDownloadLoading}
+              value={githubChoiceLabel}
+              selectedOptions={[githubDownloadChoice]}
               disabled={githubDownloadLoading || githubDownloadMutation !== null}
-              options={[
-                { value: "direct", label: "GitHub 直连" },
-                { value: "gh-proxy", label: "gh-proxy.com 镜像" },
-                { value: "custom", label: "自定义 HTTPS 镜像" },
-              ]}
-              onChange={(value: GithubDownloadChoice) => {
+              onOptionSelect={(_, data) => {
+                const value = data.optionValue;
+                if (value !== "direct" && value !== "gh-proxy" && value !== "custom") return;
                 setGithubDownloadChoice(value);
                 if (value === "custom" && githubCustomPrefix === GITHUB_PROXY_PRESET) {
                   setGithubCustomPrefix("");
                 }
               }}
-            />
-          </div>
+            >
+              <Option value="direct">GitHub 直连</Option>
+              <Option value="gh-proxy">gh-proxy.com 镜像</Option>
+              <Option value="custom">自定义 HTTPS 镜像</Option>
+            </Dropdown>
+          </Field>
+
           {githubDownloadChoice === "custom" && (
-            <div className="github-download-field">
-              <label htmlFor="github-custom-prefix">镜像 Base URL</label>
+            <Field label="镜像 Base URL">
               <Input
                 id="github-custom-prefix"
                 value={githubCustomPrefix}
                 disabled={githubDownloadMutation !== null}
                 placeholder="https://mirror.example.com/"
                 autoComplete="url"
-                onChange={(event) => setGithubCustomPrefix(event.target.value)}
+                onChange={(_, data) => setGithubCustomPrefix(data.value)}
               />
-            </div>
+            </Field>
           )}
+
           {githubDownloadError && (
-            <Alert
-              type="error"
-              showIcon
-              closable
-              message="GitHub 下载设置不可用"
-              description={githubDownloadError}
-              action={(
+            <MessageBar intent="error" layout="multiline">
+              <MessageBarBody>
+                <MessageBarTitle>GitHub 下载设置不可用</MessageBarTitle>
+                {githubDownloadError}
+              </MessageBarBody>
+              <MessageBarActions>
                 <Button
-                  size="small"
-                  icon={<ReloadOutlined />}
-                  loading={githubDownloadLoading}
+                  icon={githubDownloadLoading ? <Spinner size="tiny" /> : <ArrowSyncRegular />}
+                  disabled={githubDownloadLoading}
                   onClick={() => void loadGithubSettings()}
                 >
                   重试
                 </Button>
-              )}
-              onClose={() => setGithubDownloadError(undefined)}
-            />
+                <Button
+                  appearance="transparent"
+                  icon={<DismissRegular />}
+                  aria-label="关闭 GitHub 下载设置错误"
+                  onClick={() => setGithubDownloadError(undefined)}
+                />
+              </MessageBarActions>
+            </MessageBar>
           )}
-          <Space wrap>
+
+          <div className="settings-action-row">
             <Button
-              type="primary"
-              loading={githubDownloadMutation === "saving"}
-              disabled={githubDownloadLoading || githubDownloadMutation !== null || (githubDownloadChoice === "custom" && !githubCustomPrefix.trim())}
+              appearance="primary"
+              icon={githubDownloadMutation === "saving" ? <Spinner size="tiny" /> : <SaveRegular />}
+              disabled={
+                githubDownloadLoading
+                || githubDownloadMutation !== null
+                || (githubDownloadChoice === "custom" && !githubCustomPrefix.trim())
+              }
               onClick={() => void saveGithubSettings()}
             >
               保存设置
             </Button>
             {(githubDownloadStatus.mode === "custom" || githubDownloadChoice !== "direct") && (
               <Button
-                loading={githubDownloadMutation === "clearing"}
+                icon={githubDownloadMutation === "clearing" ? <Spinner size="tiny" /> : <ArrowSyncRegular />}
                 disabled={githubDownloadLoading || githubDownloadMutation !== null}
                 onClick={() => void clearGithubSettings()}
               >
                 清除并恢复直连
               </Button>
             )}
-          </Space>
+          </div>
           <small>保存时后端只验证 HTTPS 地址格式；实际下载还会核验 GitHub 官方 SHA-256，不执行网络连通性测试。</small>
         </div>
-        <label>Nexus Mods API</label>
+
+        <h2 className="settings-section-title">Nexus Mods API</h2>
         <div className="nexus-setting">
           <div className="nexus-setting-status">
             <div>
               <strong>个人 API Key</strong>
               <span>仅接受 Nexus Mods 的 Personal API Key，不支持应用凭据、SSO Token 或 JWT；热门列表无需 Key。</span>
             </div>
-            <Tag color={nexusConfigured ? "green" : "default"}>
+            <Badge appearance="tint" color={nexusConfigured ? "success" : "subtle"}>
               {nexusStatusLoading ? "读取中" : nexusConfigured ? "已配置" : "未配置"}
-            </Tag>
+            </Badge>
           </div>
-          <Space.Compact block>
-            <Input.Password
-              value={nexusKey}
-              disabled={nexusStatusLoading || nexusMutation !== null}
-              onChange={(event) => setNexusKey(event.target.value)}
-              placeholder={nexusConfigured ? "输入新 Key 可替换现有凭据" : "粘贴 Nexus Mods 个人 API Key"}
-              autoComplete="new-password"
-            />
-            <Button
-              type="primary"
-              loading={nexusMutation === "saving"}
-              disabled={nexusStatusLoading || nexusMutation !== null || !nexusKey.trim()}
-              onClick={() => void saveNexusKey()}
-            >
-              验证并保存
-            </Button>
-            {nexusConfigured && (
-              <Button
-                danger
-                loading={nexusMutation === "clearing"}
+
+          <Field label="Personal API Key">
+            <div className="settings-inline-control nexus-key-control">
+              <Input
+                type="password"
+                value={nexusKey}
                 disabled={nexusStatusLoading || nexusMutation !== null}
-                onClick={() => void removeNexusKey()}
+                onChange={(_, data) => setNexusKey(data.value)}
+                placeholder={nexusConfigured ? "输入新 Key 可替换现有凭据" : "粘贴 Nexus Mods 个人 API Key"}
+                autoComplete="new-password"
+              />
+              <Button
+                appearance="primary"
+                icon={nexusMutation === "saving" ? <Spinner size="tiny" /> : <KeyRegular />}
+                disabled={nexusStatusLoading || nexusMutation !== null || !nexusKey.trim()}
+                onClick={() => void saveNexusKey()}
               >
-                清除
+                验证并保存
               </Button>
-            )}
-          </Space.Compact>
-          {nexusError && (
-            <Alert
-              type="error"
-              showIcon
-              closable
-              message="Nexus API Key 配置失败"
-              description={nexusError}
-              action={(
+              {nexusConfigured && (
                 <Button
-                  size="small"
-                  icon={<ReloadOutlined />}
-                  loading={nexusStatusLoading}
-                  disabled={nexusMutation !== null}
+                  className="danger-button"
+                  icon={nexusMutation === "clearing" ? <Spinner size="tiny" /> : <DeleteRegular />}
+                  disabled={nexusStatusLoading || nexusMutation !== null}
+                  onClick={() => void removeNexusKey()}
+                >
+                  清除
+                </Button>
+              )}
+            </div>
+          </Field>
+
+          {nexusError && (
+            <MessageBar intent="error" layout="multiline">
+              <MessageBarBody>
+                <MessageBarTitle>Nexus API Key 配置失败</MessageBarTitle>
+                {nexusError}
+              </MessageBarBody>
+              <MessageBarActions>
+                <Button
+                  icon={nexusStatusLoading ? <Spinner size="tiny" /> : <ArrowSyncRegular />}
+                  disabled={nexusMutation !== null || nexusStatusLoading}
                   onClick={() => void loadNexusStatus()}
                 >
                   重试读取
                 </Button>
-              )}
-              onClose={() => setNexusError(undefined)}
-            />
+                <Button
+                  appearance="transparent"
+                  icon={<DismissRegular />}
+                  aria-label="关闭 Nexus API Key 错误"
+                  onClick={() => setNexusError(undefined)}
+                />
+              </MessageBarActions>
+            </MessageBar>
           )}
-          <Space wrap>
+
+          <div className="nexus-key-help">
             <Button
-              type="link"
-              icon={<ExportOutlined />}
+              appearance="subtle"
+              icon={<OpenRegular />}
               disabled={nexusMutation !== null}
               onClick={() => void openNexusApiKeysPage()}
             >
               获取 Personal API Key
             </Button>
             <span>在 Nexus Mods 设置页的 Personal API Key 区域复制完整 Key。</span>
-          </Space>
+          </div>
         </div>
+
         <h2 className="settings-section-title">AI 翻译</h2>
         <div className="ai-translation-setting">
           <div className="nexus-setting-status">
@@ -721,70 +904,92 @@ export function SettingsPage({
               <strong>OpenAI-compatible 接口</strong>
               <span>API Key 保存到系统凭据库；名称与简介按星露谷物语语境翻译。</span>
             </div>
-            <Tag color={translationStatus.configured ? "green" : "default"}>
-              {translationStatus.configured ? "已配置" : "未配置"}
-            </Tag>
+            <Badge appearance="tint" color={translationStatus.configured ? "success" : "subtle"}>
+              {translationStatusLoading ? "读取中" : translationStatus.configured ? "已配置" : "未配置"}
+            </Badge>
           </div>
-          <div className="ai-translation-field">
-            <label htmlFor="translation-base-url">Base URL</label>
+
+          <Field label="Base URL">
             <Input
               id="translation-base-url"
               value={translationBaseUrl}
               disabled={translationControlsBusy}
-              onChange={(event) => updateTranslationBaseUrl(event.target.value)}
+              onChange={(_, data) => updateTranslationBaseUrl(data.value)}
               placeholder="例如 https://api.openai.com/v1 或 http://127.0.0.1:11434/v1"
               autoComplete="url"
             />
-          </div>
+          </Field>
+
           {usesPlainHttp(translationBaseUrl) && (
-            <Alert
-              type="warning"
-              showIcon
-              message="HTTP 连接不会加密 API Key"
-              description="API Key、Mod 文本和模型回复会以明文在网络中传输。仅对完全信任的服务和网络使用 HTTP，公网服务建议改用 HTTPS。"
-            />
+            <MessageBar intent="warning" layout="multiline">
+              <MessageBarBody>
+                <MessageBarTitle>HTTP 连接不会加密 API Key</MessageBarTitle>
+                API Key、Mod 文本和模型回复会以明文在网络中传输。仅对完全信任的服务和网络使用 HTTP，公网服务建议改用 HTTPS。
+              </MessageBarBody>
+            </MessageBar>
           )}
-          <div className="ai-translation-field">
-            <label htmlFor="translation-api-key">API Key</label>
-            <Input.Password
+
+          <Field label="API Key">
+            <Input
               id="translation-api-key"
+              type="password"
               value={translationApiKey}
               disabled={translationControlsBusy}
-              onChange={(event) => updateTranslationApiKey(event.target.value)}
-              placeholder={translationStatus.apiKeyConfigured && hasSameOrigin(translationStatus.baseUrl, translationBaseUrl)
-                ? "已安全保存；留空即可使用当前 API Key"
-                : "请输入 API Key"}
+              onChange={(_, data) => updateTranslationApiKey(data.value)}
+              placeholder={
+                translationStatus.apiKeyConfigured
+                && hasSameOrigin(translationStatus.baseUrl, translationBaseUrl)
+                  ? "已安全保存；留空即可使用当前 API Key"
+                  : "请输入 API Key"
+              }
               autoComplete="new-password"
             />
-          </div>
-          <div className="ai-translation-field">
-            <label htmlFor="translation-model-id">Model ID</label>
+          </Field>
+
+          <Field label="Model ID">
             <div className="ai-translation-model-control">
               <Input
                 id="translation-model-id"
                 value={translationModelId}
                 disabled={translationControlsBusy}
-                allowClear
                 placeholder="手动输入 Model ID"
                 autoComplete="off"
                 spellCheck={false}
-                onChange={(event) => updateTranslationModelId(event.target.value)}
+                contentAfter={translationModelId ? (
+                  <Button
+                    appearance="transparent"
+                    size="small"
+                    icon={<DismissRegular />}
+                    aria-label="清空 Model ID"
+                    onClick={() => updateTranslationModelId("")}
+                  />
+                ) : undefined}
+                onChange={(_, data) => updateTranslationModelId(data.value)}
               />
-              <Select
+              <Combobox
                 aria-label="选择已获取的模型"
-                value={selectedTranslationModel}
-                options={translationModelOptions}
+                value={translationModelPickerValue}
+                selectedOptions={selectedTranslationModel ? [selectedTranslationModel] : []}
                 disabled={translationControlsBusy || translationModels.length === 0}
-                placeholder={translationModels.length > 0 ? "选择模型" : "暂无模型"}
-                optionFilterProp="value"
-                optionLabelProp="value"
-                showSearch
-                allowClear
-                onChange={(value: string | undefined) => updateTranslationModelId(value ?? "")}
-              />
+                placeholder={translationModels.length > 0 ? "搜索并选择模型" : "暂无模型"}
+                onChange={(event) => setTranslationModelPickerValue(event.target.value)}
+                onOptionSelect={(_, data) => {
+                  if (!data.optionValue) return;
+                  updateTranslationModelId(data.optionValue);
+                  setTranslationModelPickerValue(data.optionText ?? data.optionValue);
+                }}
+              >
+                {translationModels.map((model) => (
+                  <Option key={model.id} value={model.id} text={model.id}>
+                    <div className="ai-model-option">
+                      <span>{model.id}</span>
+                      {model.ownedBy && <small>{model.ownedBy}</small>}
+                    </div>
+                  </Option>
+                ))}
+              </Combobox>
               <Button
-                icon={<ReloadOutlined />}
-                loading={translationModelsLoading}
+                icon={translationModelsLoading ? <Spinner size="tiny" /> : <ArrowSyncRegular />}
                 disabled={translationControlsBusy || !translationProviderReady}
                 onClick={() => void loadTranslationModels()}
               >
@@ -796,24 +1001,31 @@ export function SettingsPage({
                 已加载 {translationModels.length} 个模型，可搜索或继续手动输入。
               </small>
             )}
-          </div>
+          </Field>
+
           {translationRequestActivity && (
-            <Alert
+            <MessageBar
               className="ai-translation-activity"
-              type={translationRequestActivity.phase === "error"
-                ? "error"
-                : translationRequestActivity.phase === "success" ? "success" : "info"}
-              showIcon
-              closable={translationRequestActivity.phase !== "loading"}
-              message={translationRequestActivity.phase === "loading" ? (
-                <>
-                  正在向 <code>{translationRequestActivity.request.endpoint}</code> 发起请求…
-                </>
-              ) : translationRequestActivity.phase === "success" ? "请求完成" : "请求失败"}
-              description={(
+              intent={
+                translationRequestActivity.phase === "error"
+                  ? "error"
+                  : translationRequestActivity.phase === "success"
+                    ? "success"
+                    : "info"
+              }
+              layout="multiline"
+            >
+              <MessageBarBody>
+                <MessageBarTitle>
+                  {translationRequestActivity.phase === "loading" ? (
+                    <>
+                      正在向 <code>{translationRequestActivity.request.endpoint}</code> 发起请求...
+                    </>
+                  ) : translationRequestActivity.phase === "success" ? "请求完成" : "请求失败"}
+                </MessageBarTitle>
                 <div className="ai-translation-activity-details">
                   <div className="ai-translation-request-target">
-                    <Tag bordered={false}>{translationRequestActivity.request.method}</Tag>
+                    <Badge appearance="outline">{translationRequestActivity.request.method}</Badge>
                     <code>{translationRequestActivity.request.endpoint}</code>
                   </div>
                   <div className="ai-translation-payload">
@@ -839,38 +1051,55 @@ export function SettingsPage({
                     </div>
                   )}
                 </div>
+              </MessageBarBody>
+              {translationRequestActivity.phase !== "loading" && (
+                <MessageBarActions>
+                  <Button
+                    appearance="transparent"
+                    icon={<DismissRegular />}
+                    aria-label="关闭请求详情"
+                    onClick={() => setTranslationRequestActivity(undefined)}
+                  />
+                </MessageBarActions>
               )}
-              onClose={() => setTranslationRequestActivity(undefined)}
-            />
+            </MessageBar>
           )}
-          <Space wrap className="ai-translation-actions">
+
+          <div className="ai-translation-actions settings-action-row">
             <Button
-              icon={<ApiOutlined />}
-              loading={translationTestLoading}
-              disabled={translationControlsBusy || !translationProviderReady || !translationModelId.trim()}
+              icon={translationTestLoading ? <Spinner size="tiny" /> : <SendRegular />}
+              disabled={
+                translationControlsBusy
+                || !translationProviderReady
+                || !translationModelId.trim()
+              }
               onClick={() => void sendTranslationTest()}
             >
               发送测试
             </Button>
             <Button
-              type="primary"
-              loading={translationMutation === "saving"}
-              disabled={translationControlsBusy || !translationProviderReady || !translationModelId.trim()}
+              appearance="primary"
+              icon={translationMutation === "saving" ? <Spinner size="tiny" /> : <SaveRegular />}
+              disabled={
+                translationControlsBusy
+                || !translationProviderReady
+                || !translationModelId.trim()
+              }
               onClick={() => void saveTranslationSettings()}
             >
               保存配置
             </Button>
             {translationStatus.configured && (
               <Button
-                danger
-                loading={translationMutation === "clearing"}
+                className="danger-button"
+                icon={translationMutation === "clearing" ? <Spinner size="tiny" /> : <DeleteRegular />}
                 disabled={translationControlsBusy}
                 onClick={() => void removeTranslationSettings()}
               >
                 清除
               </Button>
             )}
-          </Space>
+          </div>
         </div>
       </div>
     </section>

@@ -53,23 +53,16 @@ pub async fn search(request: SearchRemoteModsRequest) -> Result<RemoteModSearchR
         RemoteModSearchSource::All => {
             let (nexus_result, github_result) =
                 tokio::join!(nexus::search(&query), github::search(&query));
-            let nexus_succeeded =
-                collect_search_result(&mut mods, &mut issues, "Nexus Mods", nexus_result);
+            collect_search_result(&mut mods, &mut issues, "Nexus Mods", nexus_result);
             collect_search_result(&mut mods, &mut issues, "GitHub", github_result);
-            if nexus_succeeded {
-                issues.push(nexus_search_scope_notice());
-            }
         }
         RemoteModSearchSource::Nexus => {
-            let nexus_succeeded = collect_search_result(
+            collect_search_result(
                 &mut mods,
                 &mut issues,
                 "Nexus Mods",
                 nexus::search(&query).await,
             );
-            if nexus_succeeded {
-                issues.push(nexus_search_scope_notice());
-            }
         }
         RemoteModSearchSource::Github => {
             collect_search_result(
@@ -103,11 +96,10 @@ fn collect_search_result(
     issues: &mut Vec<RemoteModSearchIssue>,
     source: &str,
     result: Result<Vec<RemoteMod>, String>,
-) -> bool {
+) {
     match result {
         Ok(items) => {
             mods.extend(items);
-            true
         }
         Err(message) => {
             issues.push(RemoteModSearchIssue {
@@ -115,16 +107,7 @@ fn collect_search_result(
                 kind: RemoteModSearchIssueKind::Error,
                 message,
             });
-            false
         }
-    }
-}
-
-fn nexus_search_scope_notice() -> RemoteModSearchIssue {
-    RemoteModSearchIssue {
-        source: "Nexus Mods".into(),
-        kind: RemoteModSearchIssueKind::Warning,
-        message: "Nexus 官方公开 API 没有全站关键词搜索端点；当前结果来自官方热门、最近更新和最近新增列表中的匹配项。".into(),
     }
 }
 

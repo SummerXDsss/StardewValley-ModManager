@@ -1,0 +1,219 @@
+<Page
+    x:Class="ValleySteward.WinUI.Pages.ModsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <Page.Resources>
+    <DataTemplate x:Key="ModTrashItemTemplate">
+      <Grid Padding="10,9" ColumnSpacing="14" MinHeight="62">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <StackPanel VerticalAlignment="Center" Spacing="3">
+          <TextBlock FontWeight="SemiBold"
+                     Text="{Binding DisplayName}"
+                     TextTrimming="CharacterEllipsis" />
+          <TextBlock FontSize="12"
+                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                     Text="{Binding DetailsText}"
+                     TextTrimming="CharacterEllipsis" />
+        </StackPanel>
+        <Button Grid.Column="1" VerticalAlignment="Center"
+                Content="恢复"
+                Click="OnRestoreTrashItemClick" />
+      </Grid>
+    </DataTemplate>
+  </Page.Resources>
+
+  <Grid Padding="32,26,32,32"
+        RowSpacing="18"
+        AllowDrop="True"
+        DragOver="OnArchiveDragOver"
+        Drop="OnArchiveDrop">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+    </Grid.RowDefinitions>
+
+    <Grid ColumnSpacing="16">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
+      <StackPanel>
+        <TextBlock FontFamily="Segoe UI Variable Display" FontSize="28" FontWeight="SemiBold" Text="我的 Mod" />
+        <TextBlock Margin="0,5,0,0" Foreground="{ThemeResource TextFillColorSecondaryBrush}">
+          <Run Text="{Binding EnabledModCount}" /><Run Text=" 个启用，" />
+          <Run Text="{Binding ProblemModCount}" /><Run Text=" 个需要处理" />
+        </TextBlock>
+      </StackPanel>
+      <StackPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center"
+                  Orientation="Horizontal" Spacing="8">
+        <Button Click="OnInstallArchiveClick" ToolTipService.ToolTip="选择并安装 SMAPI Mod ZIP">
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <FontIcon Glyph="&#xE8E5;" />
+            <TextBlock Text="安装 ZIP" />
+          </StackPanel>
+        </Button>
+        <Button x:Name="CheckAllUpdatesButton"
+                Click="OnCheckAllUpdatesClick"
+                ToolTipService.ToolTip="根据 manifest.json 的 UpdateKeys 检查 Nexus 与 GitHub">
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <FontIcon Glyph="&#xE895;" />
+            <TextBlock Text="检查更新" />
+          </StackPanel>
+        </Button>
+        <Button x:Name="UpdateAllButton"
+                Click="OnUpdateAllClick"
+                Visibility="Collapsed"
+                ToolTipService.ToolTip="仅更新本次批量检查确认可安全自动安装的 Mod">
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <ProgressRing x:Name="UpdateAllProgressRing"
+                          Width="16" Height="16"
+                          IsActive="False"
+                          Visibility="Collapsed" />
+            <FontIcon x:Name="UpdateAllIcon" Glyph="&#xE896;" />
+            <TextBlock x:Name="UpdateAllButtonText" Text="全部更新" />
+          </StackPanel>
+        </Button>
+        <Button Click="OnTrashClick" ToolTipService.ToolTip="查看管理器回收区">
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <FontIcon Glyph="&#xE74D;" />
+            <TextBlock Text="回收区" />
+          </StackPanel>
+        </Button>
+        <Button Click="OnRefreshClick" ToolTipService.ToolTip="重新扫描">
+          <FontIcon Glyph="&#xE72C;" />
+        </Button>
+      </StackPanel>
+    </Grid>
+
+    <Grid Grid.Row="1" ColumnSpacing="10">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="180" />
+      </Grid.ColumnDefinitions>
+      <TextBox x:Name="SearchBox"
+               PlaceholderText="搜索名称、作者或 UniqueID"
+               TextChanged="OnFilterChanged" />
+      <ComboBox x:Name="FilterComboBox" Grid.Column="1"
+                SelectedIndex="0" SelectionChanged="OnFilterChanged">
+        <ComboBoxItem Content="全部" Tag="all" />
+        <ComboBoxItem Content="已启用" Tag="enabled" />
+        <ComboBoxItem Content="已停用" Tag="disabled" />
+        <ComboBoxItem Content="需要处理" Tag="problem" />
+      </ComboBox>
+    </Grid>
+
+    <InfoBar x:Name="TranslationInfoBar" Grid.Row="2"
+             IsOpen="False" IsClosable="True" />
+
+    <ListView x:Name="ModsList" Grid.Row="3"
+              SelectionMode="None" VerticalAlignment="Stretch">
+      <ListView.ItemContainerStyle>
+        <Style TargetType="ListViewItem">
+          <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+          <Setter Property="Padding" Value="0" />
+          <Setter Property="Margin" Value="0,0,0,8" />
+        </Style>
+      </ListView.ItemContainerStyle>
+      <ListView.ItemTemplate>
+        <DataTemplate>
+          <Border Padding="15,13" CornerRadius="6"
+                  Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                  BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                  BorderThickness="1">
+            <Grid ColumnSpacing="14">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="150" />
+                <ColumnDefinition Width="72" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+
+              <StackPanel Spacing="5">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <TextBlock FontSize="15" FontWeight="SemiBold"
+                             Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                  <Border Padding="5,1" CornerRadius="3"
+                          Background="{ThemeResource SubtleFillColorSecondaryBrush}">
+                    <TextBlock FontSize="11" Text="{Binding StatusText}" />
+                  </Border>
+                </StackPanel>
+                <TextBlock FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}">
+                  <Run Text="{Binding Author}" /><Run Text=" · " /><Run Text="{Binding Id}" />
+                </TextBlock>
+                <StackPanel>
+                  <TextBlock MaxLines="2"
+                             Text="{Binding Description}"
+                             TextTrimming="CharacterEllipsis"
+                             TextWrapping="WrapWholeWords" />
+                  <Button Padding="0,2" HorizontalAlignment="Left"
+                          Background="Transparent" BorderThickness="0"
+                          Content="展开" Click="OnToggleDescription" />
+                </StackPanel>
+              </StackPanel>
+
+              <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                <TextBlock FontSize="12"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           Text="版本" />
+                <TextBlock Margin="0,3,0,0" Text="{Binding Version}"
+                           TextTrimming="CharacterEllipsis" />
+                <TextBlock Margin="0,4,0,0"
+                           FontSize="11"
+                           MaxLines="2"
+                           Text="{Binding UpdateStatusText}"
+                           TextTrimming="CharacterEllipsis"
+                           TextWrapping="WrapWholeWords"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+              </StackPanel>
+
+              <ToggleSwitch Grid.Column="2"
+                            Width="48"
+                            MinWidth="48"
+                            VerticalAlignment="Center"
+                            HorizontalAlignment="Center"
+                            IsOn="{Binding Enabled, Mode=OneWay}"
+                            OnContent="{x:Null}"
+                            OffContent="{x:Null}"
+                            AutomationProperties.Name="{Binding StatusText}"
+                            ToolTipService.ToolTip="启用或停用 Mod"
+                            Loaded="OnEnabledToggleLoaded"
+                            Unloaded="OnEnabledToggleUnloaded" />
+
+              <StackPanel Grid.Column="3" VerticalAlignment="Center"
+                          Orientation="Horizontal" Spacing="3">
+                <Button Padding="9,6"
+                        Click="OnUpdateClick"
+                        IsEnabled="{Binding CanRunUpdateAction}"
+                        Content="{Binding UpdateActionText}"
+                        ToolTipService.ToolTip="检查或安装可信上游更新" />
+                <Button Padding="9,6"
+                        Click="OnTranslateClick"
+                        IsEnabled="{Binding CanTranslate}"
+                        Content="{Binding TranslationActionText}"
+                        ToolTipService.ToolTip="翻译名称与简介并保存独立 sidecar" />
+                <Button Padding="8" Click="OnDetailsClick"
+                        ToolTipService.ToolTip="查看 Mod 详情">
+                  <FontIcon Glyph="&#xE946;" />
+                </Button>
+                <Button Padding="8" Click="OnOpenFolderClick"
+                        ToolTipService.ToolTip="打开目录">
+                  <FontIcon Glyph="&#xE8B7;" />
+                </Button>
+                <Button Padding="8" Click="OnDeleteClick"
+                        ToolTipService.ToolTip="移到管理器回收区">
+                  <FontIcon Glyph="&#xE74D;" />
+                </Button>
+              </StackPanel>
+            </Grid>
+          </Border>
+        </DataTemplate>
+      </ListView.ItemTemplate>
+    </ListView>
+  </Grid>
+</Page>

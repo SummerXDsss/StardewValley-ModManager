@@ -1,14 +1,32 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, App, Avatar, Button, Drawer, Empty, Input, Segmented, Space, Table, Tag, Typography } from "antd";
-import type { TableProps } from "antd";
 import {
-  CloudDownloadOutlined,
-  ExportOutlined,
-  InfoCircleOutlined,
-  SearchOutlined,
-  TranslationOutlined,
-} from "@ant-design/icons";
-import { PageTitle } from "../shared";
+  Avatar,
+  Badge,
+  Button,
+  DrawerBody,
+  DrawerHeader,
+  DrawerHeaderTitle,
+  Input,
+  MessageBar,
+  MessageBarActions,
+  MessageBarBody,
+  MessageBarTitle,
+  OverlayDrawer,
+  Spinner,
+  Tab,
+  TabList,
+} from "@fluentui/react-components";
+import {
+  ArrowDownloadRegular,
+  ChevronLeftRegular,
+  ChevronRightRegular,
+  DismissRegular,
+  InfoRegular,
+  OpenRegular,
+  SearchRegular,
+  TranslateRegular,
+} from "@fluentui/react-icons";
+import { PageTitle, useAppUi } from "../shared";
 import {
   discoverMods,
   downloadNexusFile,
@@ -25,14 +43,75 @@ import type {
   RemoteModSearchSource,
 } from "../../types";
 
+const PAGE_SIZE = 6;
+
 interface NexusDetailsSelection {
   modId: string;
   providerId: string;
   details: NexusModDetails;
 }
 
+interface ExpandableSummaryProps {
+  expanded: boolean;
+  modId: string;
+  summary: string;
+  onToggle: (modId: string) => void;
+}
+
+function ExpandableSummary({ expanded, modId, summary, onToggle }: ExpandableSummaryProps) {
+  const paragraphRef = useRef<HTMLParagraphElement>(null);
+  const [overflows, setOverflows] = useState(false);
+
+  useEffect(() => {
+    const paragraph = paragraphRef.current;
+    if (!paragraph || expanded) return;
+
+    const measure = () => {
+      setOverflows(paragraph.scrollHeight > paragraph.clientHeight + 1);
+    };
+    measure();
+
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
+    observer?.observe(paragraph);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [expanded, summary]);
+
+  return (
+    <div className="remote-mod-summary-copy">
+      <p
+        id={`remote-mod-summary-${modId}`}
+        ref={paragraphRef}
+        className={`remote-mod-description${expanded ? " expanded" : " clamped"}`}
+        style={expanded ? undefined : {
+          display: "-webkit-box",
+          overflow: "hidden",
+          WebkitBoxOrient: "vertical",
+          WebkitLineClamp: 2,
+        }}
+      >
+        {summary}
+      </p>
+      {(overflows || expanded) && (
+        <Button
+          appearance="subtle"
+          size="small"
+          aria-expanded={expanded}
+          aria-controls={`remote-mod-summary-${modId}`}
+          onClick={() => onToggle(modId)}
+        >
+          {expanded ? "收起" : "展开"}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 export function DownloadsPage() {
-  const { message } = App.useApp();
+  const { notify } = useAppUi();
   const [search, setSearch] = useState("");
   const [source, setSource] = useState<RemoteModSearchSource>("all");
   const [activeQuery, setActiveQuery] = useState<string>();
@@ -46,6 +125,8 @@ export function DownloadsPage() {
   const [detailsSelection, setDetailsSelection] = useState<NexusDetailsSelection>();
   const [downloadingFile, setDownloadingFile] = useState<string>();
   const [translatingModIds, setTranslatingModIds] = useState<Set<string>>(() => new Set());
+  const [expandedModIds, setExpandedModIds] = useState<Set<string>>(() => new Set());
+  const [page, setPage] = useState(1);
   const translatingModIdsRef = useRef(new Set<string>());
   const requestSequence = useRef(0);
   const detailsRequestSequence = useRef(0);
@@ -58,12 +139,16 @@ export function DownloadsPage() {
       || (source === "nexus" && mod.source === "Nexus Mods")
       || (source === "github" && mod.source === "GitHub")
     ));
+  const pageCount = Math.max(1, Math.ceil(mods.length / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const visibleMods = mods.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   const loadMods = async () => {
     const requestId = ++requestSequence.current;
     setLoading(true);
     setLoadError(undefined);
     setSearchIssues([]);
+    setPage(1);
     try {
       const discovered = await discoverMods();
       if (requestId !== requestSequence.current) return;
@@ -89,6 +174,7 @@ export function DownloadsPage() {
     setLoading(true);
     setLoadError(undefined);
     setSearchIssues([]);
+    setPage(1);
     try {
       const result = await searchRemoteMods({ query, source: selectedSource });
       if (requestId !== requestSequence.current) return;
@@ -109,8 +195,12 @@ export function DownloadsPage() {
 
   const openMod = async (mod: RemoteMod) => {
     const download = mod.downloadUrl;
-    await openRemoteUrl(download ?? mod.pageUrl);
-    message.success(download ? "已在浏览器中打开官方发布包" : "已打开官方发布页");
+    try {
+      await openRemoteUrl(download ?? mod.pageUrl);
+      notify("success", download ? "已打开官方发布包" : "已打开官方发布页");
+    } catch (error) {
+      notify("error", "无法打开链接", String(error));
+    }
   };
 
   const showNexusDetails = async (mod: RemoteMod) => {
@@ -152,7 +242,7 @@ export function DownloadsPage() {
       ))
     ));
     if (!versionBelongsToMod) {
-      message.error("所选文件与当前 Nexus Mod 不匹配，请重新打开详情");
+      notify("error", "文件不匹配", "所选文件与当前 Nexus Mod 不匹配，请重新打开详情。");
       return;
     }
 
@@ -171,11 +261,14 @@ export function DownloadsPage() {
           ? { name: sourceMod.name, description: sourceMod.summary }
           : undefined,
       );
-      message.success(downloaded.metadataPath
-        ? `已下载并保存译文元数据：${downloaded.path}`
-        : `已下载到 ${downloaded.path}`);
+      notify(
+        "success",
+        downloaded.metadataPath ? "下载完成，译文元数据已保存" : "下载完成",
+        downloaded.path,
+      );
     } catch (error) {
-      message.error(String(error));
+      const reason = String(error).replace(/^(?:Error:\s*)+/i, "").trim();
+      notify("error", "下载失败", reason || "Nexus 没有返回可下载的文件。");
     } finally {
       setDownloadingFile(undefined);
     }
@@ -192,214 +285,339 @@ export function DownloadsPage() {
           ? { ...item, name: translated.name, summary: translated.summary, translated: true }
           : item
       )));
-      message.success("名称与简介已翻译");
+      notify("success", "名称与简介已翻译");
     } catch (error) {
-      message.error(String(error));
+      notify("error", "翻译失败", String(error));
     } finally {
       translatingModIdsRef.current.delete(mod.id);
       setTranslatingModIds(new Set(translatingModIdsRef.current));
     }
   };
 
-  const sourceOptions = [
-    { label: "全部", value: "all" },
-    { label: "Nexus Mods", value: "nexus" },
-    { label: "GitHub", value: "github" },
-  ];
-  const hasSearchErrors = searchIssues.some((issue) => issue.kind === "error");
+  const toggleSummary = (modId: string) => {
+    setExpandedModIds((current) => {
+      const next = new Set(current);
+      if (next.has(modId)) next.delete(modId);
+      else next.add(modId);
+      return next;
+    });
+  };
 
-  const columns: TableProps<RemoteMod>["columns"] = [
-    {
-      title: "Mod",
-      dataIndex: "name",
-      width: 500,
-      render: (_, mod) => (
-        <div className="remote-mod-row">
-          <Avatar shape="square" size={48} src={mod.imageUrl}>
-            {mod.name.slice(0, 1)}
-          </Avatar>
-          <div className="remote-mod">
-            <div className="remote-mod-title">
-              <strong>{mod.name}</strong>
-              {mod.translated && <Tag color="green">已翻译</Tag>}
-            </div>
-            <div className="remote-mod-summary">
-              <Typography.Paragraph
-                className="remote-mod-description"
-                ellipsis={{
-                  rows: 2,
-                  expandable: "collapsible",
-                  symbol: (expanded) => expanded ? "收起" : "展开",
-                }}
-              >
-                {mod.summary}
-              </Typography.Paragraph>
-              <Button
-                type="text"
-                size="small"
-                icon={<TranslationOutlined />}
-                loading={translatingModIds.has(mod.id)}
-                disabled={translatingModIds.has(mod.id)}
-                onClick={() => void translateRemoteMod(mod)}
-              >
-                {mod.translated ? "重新翻译" : "一键翻译"}
-              </Button>
-            </div>
-            <small>{mod.author}</small>
-          </div>
-        </div>
-      ),
-    },
-    { title: "来源", dataIndex: "source", width: 138, render: (value) => <Tag>{value}</Tag> },
-    { title: "版本", dataIndex: "version", width: 90 },
-    { title: "热度", dataIndex: "popularity", width: 110, responsive: ["lg"] },
-    { title: "兼容性", dataIndex: "compatibility", width: 108, render: (value) => <Tag color="green">{value}</Tag> },
-    {
-      title: "操作",
-      key: "action",
-      width: 210,
-      render: (_, mod) => (
-        <Space size={6}>
-          {mod.source === "Nexus Mods" && mod.providerId && (
-            <Button icon={<InfoCircleOutlined />} onClick={() => void showNexusDetails(mod)}>详情</Button>
-          )}
-          <Button
-            type={mod.downloadUrl ? "primary" : "default"}
-            icon={mod.downloadUrl ? <CloudDownloadOutlined /> : <ExportOutlined />}
-            onClick={() => void openMod(mod)}
-          >
-            {mod.downloadUrl ? "下载" : "发布页"}
-          </Button>
-        </Space>
-      ),
-    },
-  ];
+  const changeSource = (nextSource: RemoteModSearchSource) => {
+    setSource(nextSource);
+    setPage(1);
+    if (activeQuery) void runSearch(search, nextSource);
+  };
+
+  const hasSearchErrors = searchIssues.some((issue) => issue.kind === "error");
 
   return (
     <section>
       <PageTitle title="发现 Mod" subtitle="直接浏览来自可信上游的星露谷物语 Mod" />
-      <div className="download-browser">
-        <Input.Search
-          size="large"
-          prefix={<SearchOutlined />}
-          placeholder="搜索 Mod、作者或功能"
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          onSearch={(value) => void runSearch(value)}
-          enterButton="搜索"
-          loading={loading}
-          allowClear
-        />
-        <Button size="large">安装本地压缩包</Button>
-      </div>
-      <div className="source-filter">
-        <span>来源</span>
-        <Segmented
-          options={sourceOptions}
-          value={source}
-          disabled={loading}
-          onChange={(value) => {
-            const nextSource = String(value) as RemoteModSearchSource;
-            setSource(nextSource);
-            if (activeQuery) void runSearch(search, nextSource);
-          }}
-        />
-        <small>{activeQuery ? `“${activeQuery}” 共 ${mods.length} 个结果` : `共 ${mods.length} 个发现结果`}</small>
-      </div>
-      {loadError && (
-        <Alert
-          type="warning"
-          showIcon
-          message="上游数据暂时不可用"
-          description={loadError}
-          action={<Button onClick={() => void loadMods()}>重试</Button>}
-        />
-      )}
-      {searchIssues.length > 0 && (
-        <Alert
-          type="warning"
-          showIcon
-          message={hasSearchErrors
-            ? (mods.length > 0 ? "部分搜索来源不可用" : "搜索来源暂时不可用")
-            : "Nexus 搜索范围说明"}
-          description={searchIssues.map((issue) => (
-            <div key={`${issue.source}:${issue.message}`}>
-              <strong>{issue.source}：</strong>{issue.message}
-            </div>
-          ))}
-        />
-      )}
-      <div className="table-shell remote-table">
-        <Table
-          rowKey="id"
-          columns={columns}
-          dataSource={mods}
-          loading={loading}
-          pagination={{ pageSize: 6, showSizeChanger: false }}
-          scroll={{ x: 1156 }}
-          locale={{
-            emptyText: (
-              <Empty
-                description={activeQuery ? `没有找到与“${activeQuery}”匹配的 Mod` : "暂时没有可发现的 Mod"}
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-              />
-            ),
-          }}
-        />
-      </div>
-      <Drawer
-        title={details?.name ?? "Nexus Mod 详情"}
-        open={detailsOpen}
-        width={680}
-        onClose={closeNexusDetails}
+      <form
+        className="download-browser fluent-download-browser"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void runSearch();
+        }}
       >
-        {detailsLoading && <div className="drawer-loading">正在读取 Nexus 文件与版本...</div>}
-        {detailsError && (
-          <Alert
-            type="warning"
-            showIcon
-            message="无法读取完整详情"
-            description={`${detailsError}。请在设置中填写有效的 Nexus API Key。`}
-          />
-        )}
-        {details && (
-          <div className="nexus-files">
-            <div className="nexus-detail-summary">
-              <span>Mod ID {details.gameScopedId}</span>
-              <Button icon={<ExportOutlined />} onClick={() => void openRemoteUrl(details.pageUrl)}>打开发布页</Button>
-            </div>
-            {details.files.length === 0 && <Empty description="这个 Mod 暂无文件" image={Empty.PRESENTED_IMAGE_SIMPLE} />}
-            {details.files.map((file) => (
-              <section className="nexus-file" key={file.id}>
-                <header>
-                  <div><strong>{file.name}</strong><span>{file.versionsCount} 个版本</span></div>
-                  <Tag color={file.isActive ? "green" : "default"}>{file.isActive ? "可用" : "已归档"}</Tag>
-                </header>
-                <div className="nexus-versions">
-                  {file.versions.map((version) => (
-                    <div className="nexus-version" key={version.id}>
-                      <div>
-                        <strong>{version.version}</strong>
-                        <span>{version.name}</span>
-                        <small>{version.category} · {version.uploadedAt.slice(0, 10)}</small>
-                      </div>
-                      {version.isPrimary && <Tag color="gold">主文件</Tag>}
-                      <Button
-                        type="primary"
-                        icon={<CloudDownloadOutlined />}
-                        loading={downloadingFile === version.id}
-                        onClick={() => void downloadVersion(detailsSelection, version)}
-                      >
-                        下载
-                      </Button>
-                    </div>
-                  ))}
+        <Input
+          size="large"
+          contentBefore={<SearchRegular />}
+          contentAfter={search ? (
+            <Button
+              type="button"
+              appearance="transparent"
+              size="small"
+              icon={<DismissRegular />}
+              aria-label="清空搜索输入"
+              onClick={() => setSearch("")}
+            />
+          ) : undefined}
+          placeholder="搜索 Mod、作者或功能"
+          aria-label="搜索 Mod、作者或功能"
+          value={search}
+          onChange={(_, data) => setSearch(data.value)}
+        />
+        <Button
+          type="submit"
+          size="large"
+          appearance="primary"
+          icon={loading ? <Spinner size="tiny" /> : <SearchRegular />}
+          disabled={loading}
+        >
+          搜索
+        </Button>
+      </form>
+
+      <div className="source-filter fluent-source-filter">
+        <span id="mod-source-filter-label">来源</span>
+        <TabList
+          aria-labelledby="mod-source-filter-label"
+          selectedValue={source}
+          onTabSelect={(_, data) => changeSource(data.value as RemoteModSearchSource)}
+        >
+          <Tab value="all" disabled={loading}>全部</Tab>
+          <Tab value="nexus" disabled={loading}>Nexus Mods</Tab>
+          <Tab value="github" disabled={loading}>GitHub</Tab>
+        </TabList>
+        <small aria-live="polite">
+          {activeQuery ? `“${activeQuery}” 共 ${mods.length} 个结果` : `共 ${mods.length} 个发现结果`}
+        </small>
+      </div>
+
+      {loadError && (
+        <MessageBar intent="warning" layout="multiline" className="download-message-bar">
+          <MessageBarBody>
+            <MessageBarTitle>上游数据暂时不可用</MessageBarTitle>
+            {loadError}
+          </MessageBarBody>
+          <MessageBarActions>
+            <Button appearance="transparent" onClick={() => void loadMods()}>重试</Button>
+          </MessageBarActions>
+        </MessageBar>
+      )}
+
+      {searchIssues.length > 0 && (
+        <MessageBar intent="warning" layout="multiline" className="download-message-bar">
+          <MessageBarBody>
+            <MessageBarTitle>
+              {hasSearchErrors
+                ? (mods.length > 0 ? "部分搜索来源不可用" : "搜索来源暂时不可用")
+                : "Nexus 搜索范围说明"}
+            </MessageBarTitle>
+            <div className="search-issue-list">
+              {searchIssues.map((issue) => (
+                <div key={`${issue.source}:${issue.message}`}>
+                  <strong>{issue.source}：</strong>{issue.message}
                 </div>
-              </section>
-            ))}
+              ))}
+            </div>
+          </MessageBarBody>
+        </MessageBar>
+      )}
+
+      <div className="table-shell remote-table fluent-remote-table" aria-busy={loading}>
+        {loading && (
+          <div className="remote-table-progress" role="status">
+            <Spinner label={activeQuery ? "正在搜索上游 Mod" : "正在读取上游 Mod"} />
           </div>
         )}
-      </Drawer>
+
+        {!loading && mods.length === 0 ? (
+          <div className="remote-table-empty" role="status">
+            <SearchRegular aria-hidden="true" />
+            <strong>{activeQuery ? `没有找到与“${activeQuery}”匹配的 Mod` : "暂时没有可发现的 Mod"}</strong>
+          </div>
+        ) : (
+          <div className="remote-table-scroll">
+            <table className="remote-mod-table">
+              <thead>
+                <tr>
+                  <th scope="col">Mod</th>
+                  <th scope="col">来源</th>
+                  <th scope="col">版本</th>
+                  <th scope="col">热度</th>
+                  <th scope="col">兼容性</th>
+                  <th scope="col">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleMods.map((mod) => {
+                  const translating = translatingModIds.has(mod.id);
+                  const expanded = expandedModIds.has(mod.id);
+                  return (
+                    <tr key={mod.id}>
+                      <td>
+                        <div className="remote-mod-row">
+                          <Avatar
+                            shape="square"
+                            size={48}
+                            name={mod.name}
+                            image={mod.imageUrl ? { src: mod.imageUrl } : undefined}
+                          />
+                          <div className="remote-mod">
+                            <div className="remote-mod-title">
+                              <strong>{mod.name}</strong>
+                              {mod.translated && <Badge appearance="tint" color="success">已翻译</Badge>}
+                            </div>
+                            <div className="remote-mod-summary">
+                              <ExpandableSummary
+                                expanded={expanded}
+                                modId={mod.id}
+                                summary={mod.summary}
+                                onToggle={toggleSummary}
+                              />
+                              <Button
+                                appearance="subtle"
+                                size="small"
+                                icon={translating ? <Spinner size="tiny" /> : <TranslateRegular />}
+                                disabled={translating}
+                                onClick={() => void translateRemoteMod(mod)}
+                              >
+                                {mod.translated ? "重新翻译" : "一键翻译"}
+                              </Button>
+                            </div>
+                            <small>{mod.author}</small>
+                          </div>
+                        </div>
+                      </td>
+                      <td><Badge appearance="outline">{mod.source}</Badge></td>
+                      <td>{mod.version}</td>
+                      <td>{mod.popularity}</td>
+                      <td><Badge appearance="tint" color="subtle">{mod.compatibility}</Badge></td>
+                      <td>
+                        <div className="remote-mod-actions">
+                          {mod.source === "Nexus Mods" && mod.providerId && (
+                            <Button
+                              appearance="secondary"
+                              icon={<InfoRegular />}
+                              onClick={() => void showNexusDetails(mod)}
+                            >
+                              详情
+                            </Button>
+                          )}
+                          <Button
+                            appearance={mod.downloadUrl ? "primary" : "secondary"}
+                            icon={mod.downloadUrl ? <ArrowDownloadRegular /> : <OpenRegular />}
+                            onClick={() => void openMod(mod)}
+                          >
+                            {mod.downloadUrl ? "下载" : "发布页"}
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {!loading && mods.length > PAGE_SIZE && (
+          <nav className="remote-table-pagination" aria-label="Mod 搜索结果分页">
+            <Button
+              appearance="subtle"
+              icon={<ChevronLeftRegular />}
+              disabled={currentPage === 1}
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+            >
+              上一页
+            </Button>
+            <span aria-live="polite">第 {currentPage} / {pageCount} 页</span>
+            <Button
+              appearance="subtle"
+              icon={<ChevronRightRegular />}
+              iconPosition="after"
+              disabled={currentPage === pageCount}
+              onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
+            >
+              下一页
+            </Button>
+          </nav>
+        )}
+      </div>
+
+      <OverlayDrawer
+        className="nexus-details-drawer"
+        position="end"
+        size="medium"
+        open={detailsOpen}
+        onOpenChange={(_, data) => {
+          if (!data.open) closeNexusDetails();
+        }}
+      >
+        <DrawerHeader>
+          <DrawerHeaderTitle
+            action={(
+              <Button
+                appearance="subtle"
+                icon={<DismissRegular />}
+                aria-label="关闭 Nexus Mod 详情"
+                onClick={closeNexusDetails}
+              />
+            )}
+          >
+            {details?.name ?? "Nexus Mod 详情"}
+          </DrawerHeaderTitle>
+        </DrawerHeader>
+        <DrawerBody>
+          {detailsLoading && (
+            <div className="drawer-loading" role="status">
+              <Spinner label="正在读取 Nexus 文件与版本" />
+            </div>
+          )}
+          {detailsError && (
+            <MessageBar intent="warning" layout="multiline">
+              <MessageBarBody>
+                <MessageBarTitle>无法读取完整详情</MessageBarTitle>
+                {detailsError}。请在设置中填写有效的 Nexus API Key。
+              </MessageBarBody>
+            </MessageBar>
+          )}
+          {detailsSelection && details && (
+            <div className="nexus-files">
+              <div className="nexus-detail-summary">
+                <span>Mod ID {details.gameScopedId}</span>
+                <Button icon={<OpenRegular />} onClick={() => void openRemoteUrl(details.pageUrl)}>
+                  打开发布页
+                </Button>
+              </div>
+              {details.files.length === 0 && (
+                <div className="nexus-files-empty" role="status">这个 Mod 暂无文件</div>
+              )}
+              {details.files.map((file) => (
+                <section className="nexus-file" key={file.id}>
+                  <header>
+                    <div>
+                      <strong>{file.name}</strong>
+                      <span>{file.versionsCount} 个版本</span>
+                    </div>
+                    <Badge appearance="tint" color={file.isActive ? "success" : "subtle"}>
+                      {file.isActive ? "可用" : "已归档"}
+                    </Badge>
+                  </header>
+                  <div className="nexus-versions">
+                    {file.versions.map((version) => {
+                      const downloading = downloadingFile === version.id;
+                      return (
+                        <div className="nexus-version" key={version.id}>
+                          <div>
+                            <strong>{version.version}</strong>
+                            <span>{version.name}</span>
+                            <small>{version.category} · {version.uploadedAt.slice(0, 10)}</small>
+                          </div>
+                          {version.isPrimary && (
+                            <Badge appearance="tint" color="warning">主文件</Badge>
+                          )}
+                          <div className="nexus-version-actions">
+                            <Button
+                              icon={<OpenRegular />}
+                              onClick={() => void openRemoteUrl(
+                                `${details.pageUrl}?tab=files&file_id=${version.gameScopedId}`,
+                              )}
+                            >
+                              文件页
+                            </Button>
+                            <Button
+                              appearance="primary"
+                              icon={downloading ? <Spinner size="tiny" /> : <ArrowDownloadRegular />}
+                              disabled={downloading}
+                              onClick={() => void downloadVersion(detailsSelection, version)}
+                            >
+                              下载
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+            </div>
+          )}
+        </DrawerBody>
+      </OverlayDrawer>
     </section>
   );
 }

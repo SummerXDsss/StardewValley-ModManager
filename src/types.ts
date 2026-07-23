@@ -13,8 +13,20 @@ export interface SmapiStatus {
   executable?: string;
 }
 
+export type SteamIdentitySource = "registryActiveUser" | "loginUsersVdf";
+
+export interface SteamIdentity {
+  steamId64: string;
+  friendCode: string;
+  accountName?: string;
+  personaName?: string;
+  source: SteamIdentitySource;
+  active: boolean;
+}
+
 export interface SteamStatus {
   running: boolean;
+  identity?: SteamIdentity;
 }
 
 export interface InstalledMod {

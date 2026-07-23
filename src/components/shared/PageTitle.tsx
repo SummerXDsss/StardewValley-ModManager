@@ -1,4 +1,4 @@
-import { Typography } from "antd";
+import { Text, Title1 } from "@fluentui/react-components";
 
 interface PageTitleProps {
   title: string;
@@ -8,8 +8,8 @@ interface PageTitleProps {
 export function PageTitle({ title, subtitle }: PageTitleProps) {
   return (
     <div className="page-title">
-      <Typography.Title level={1}>{title}</Typography.Title>
-      <p>{subtitle}</p>
+      <Title1>{title}</Title1>
+      <Text size={300}>{subtitle}</Text>
     </div>
   );
 }

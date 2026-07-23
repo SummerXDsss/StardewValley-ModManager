@@ -1,0 +1,366 @@
+<Page
+    x:Class="ValleySteward.WinUI.Pages.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <ScrollViewer VerticalScrollBarVisibility="Auto"
+                HorizontalScrollBarVisibility="Disabled"
+                HorizontalContentAlignment="Stretch">
+    <StackPanel Padding="32,26,32,56"
+                HorizontalAlignment="Stretch" Spacing="26">
+      <StackPanel>
+        <TextBlock FontFamily="Segoe UI Variable Display" FontSize="28"
+                   FontWeight="SemiBold" Text="设置" />
+        <TextBlock Margin="0,5,0,0"
+                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                   Text="本机路径、服务连接、启动方式与界面偏好" />
+      </StackPanel>
+
+      <StackPanel Spacing="12">
+        <TextBlock FontSize="18" FontWeight="SemiBold" Text="游戏目录" />
+        <Grid ColumnSpacing="8">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="Auto" />
+          </Grid.ColumnDefinitions>
+          <TextBox x:Name="GamePathTextBox" PlaceholderText="Stardew Valley 安装目录" />
+          <Button Grid.Column="1" Click="OnSavePathClick" Content="验证并保存" />
+          <Button Grid.Column="2" Click="OnChoosePathClick" ToolTipService.ToolTip="选择目录">
+            <FontIcon Glyph="&#xE8B7;" />
+          </Button>
+          <Button Grid.Column="3" Click="OnAutoDetectClick" ToolTipService.ToolTip="从注册表与 Steam 库自动寻找">
+            <FontIcon Glyph="&#xE721;" />
+          </Button>
+        </Grid>
+        <InfoBar x:Name="PathInfoBar" IsOpen="False" IsClosable="True" />
+      </StackPanel>
+
+      <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+      <StackPanel Spacing="14">
+        <Grid ColumnSpacing="16">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+          </Grid.ColumnDefinitions>
+          <StackPanel Spacing="3">
+            <TextBlock FontSize="18" FontWeight="SemiBold" Text="GitHub 下载" />
+            <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="Release 元数据始终来自 GitHub 官方；镜像仅代理经过官方 SHA-256 校验的安装包。" />
+          </StackPanel>
+          <Border Grid.Column="1" VerticalAlignment="Top"
+                  Padding="9,4" CornerRadius="4"
+                  Background="{ThemeResource ControlFillColorSecondaryBrush}">
+            <TextBlock x:Name="GitHubDownloadStatusTextBlock" Text="读取中" />
+          </Border>
+        </Grid>
+
+        <ComboBox x:Name="GitHubDownloadModeComboBox"
+                  Header="下载方式"
+                  SelectionChanged="OnGitHubDownloadModeSelectionChanged">
+          <ComboBoxItem Content="GitHub 直连" Tag="direct" />
+          <ComboBoxItem Content="gh-proxy.com（预置）" Tag="gh-proxy" />
+          <ComboBoxItem Content="自定义 HTTPS 镜像" Tag="custom" />
+        </ComboBox>
+        <TextBox x:Name="GitHubMirrorPrefixTextBox"
+                 Header="镜像前缀"
+                 PlaceholderText="https://mirror.example/" />
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Button x:Name="GitHubDownloadSaveButton"
+                  Style="{StaticResource AccentButtonStyle}"
+                  Click="OnGitHubDownloadSaveClick">
+            <StackPanel Orientation="Horizontal" Spacing="7">
+              <FontIcon Glyph="&#xE74E;" FontSize="14" />
+              <TextBlock Text="保存下载方式" />
+            </StackPanel>
+          </Button>
+          <Button x:Name="GitHubDownloadResetButton"
+                  Click="OnGitHubDownloadResetClick">
+            <StackPanel Orientation="Horizontal" Spacing="7">
+              <FontIcon Glyph="&#xE777;" FontSize="14" />
+              <TextBlock Text="恢复直连" />
+            </StackPanel>
+          </Button>
+        </StackPanel>
+        <InfoBar x:Name="GitHubDownloadInfoBar" IsOpen="False" IsClosable="True" />
+      </StackPanel>
+
+      <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+      <StackPanel Spacing="14">
+        <Grid ColumnSpacing="16">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+          </Grid.ColumnDefinitions>
+          <StackPanel Spacing="3">
+            <TextBlock FontSize="18" FontWeight="SemiBold" Text="Nexus Mods" />
+            <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="Personal API Key 仅保存在 Windows 凭据管理器中。" />
+          </StackPanel>
+          <Border Grid.Column="1" VerticalAlignment="Top"
+                  Padding="9,4" CornerRadius="4"
+                  Background="{ThemeResource ControlFillColorSecondaryBrush}">
+            <TextBlock x:Name="NexusStatusTextBlock" Text="读取中" />
+          </Border>
+        </Grid>
+
+        <PasswordBox x:Name="NexusApiKeyPasswordBox"
+                     Header="Personal API Key"
+                     PasswordRevealMode="Peek"
+                     PlaceholderText="已保存的 Key 不会回显；输入新 Key 可替换" />
+
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Button x:Name="NexusSaveButton"
+                  Style="{StaticResource AccentButtonStyle}"
+                  Click="OnNexusSaveClick">
+            <StackPanel Orientation="Horizontal" Spacing="7">
+              <FontIcon Glyph="&#xE74E;" FontSize="14" />
+              <TextBlock Text="安全保存" />
+            </StackPanel>
+          </Button>
+          <Button x:Name="NexusClearButton" Click="OnNexusClearClick">
+            <StackPanel Orientation="Horizontal" Spacing="7">
+              <FontIcon Glyph="&#xE74D;" FontSize="14" />
+              <TextBlock Text="清除" />
+            </StackPanel>
+          </Button>
+          <Button Click="OnOpenNexusKeysClick">
+            <StackPanel Orientation="Horizontal" Spacing="7">
+              <FontIcon Glyph="&#xE8A7;" FontSize="14" />
+              <TextBlock Text="获取 Personal API Key" />
+            </StackPanel>
+          </Button>
+        </StackPanel>
+        <InfoBar x:Name="NexusInfoBar" IsOpen="False" IsClosable="True" />
+      </StackPanel>
+
+      <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+      <StackPanel Spacing="14">
+        <Grid ColumnSpacing="16">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+          </Grid.ColumnDefinitions>
+          <StackPanel Spacing="3">
+            <TextBlock FontSize="18" FontWeight="SemiBold" Text="AI 翻译" />
+            <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="使用 OpenAI-compatible 接口，按《星露谷物语》语境翻译 Mod 名称与简介。" />
+          </StackPanel>
+          <Border Grid.Column="1" VerticalAlignment="Top"
+                  Padding="9,4" CornerRadius="4"
+                  Background="{ThemeResource ControlFillColorSecondaryBrush}">
+            <TextBlock x:Name="AiStatusTextBlock" Text="读取中" />
+          </Border>
+        </Grid>
+
+        <TextBox x:Name="AiBaseUrlTextBox"
+                 Header="Base URL"
+                 PlaceholderText="https://api.openai.com/v1 或 http://127.0.0.1:11434/v1"
+                 TextChanged="OnAiBaseUrlTextChanged" />
+        <InfoBar x:Name="AiHttpWarningInfoBar"
+                 IsOpen="False" IsClosable="False"
+                 Severity="Warning"
+                 Title="HTTP 连接不会加密 API Key"
+                 Message="API Key、Mod 文本和模型回复会以明文传输。仅对完全信任的本机或内网服务使用 HTTP。" />
+
+        <PasswordBox x:Name="AiApiKeyPasswordBox"
+                     Header="API Key"
+                     PasswordRevealMode="Peek"
+                     PlaceholderText="已保存的 Key 不会回显；留空可继续使用同一服务的 Key" />
+
+        <TextBox x:Name="AiModelIdTextBox"
+                 Header="Model ID"
+                 PlaceholderText="手动输入，或从下方模型列表选择" />
+
+        <Grid ColumnSpacing="8">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+          </Grid.ColumnDefinitions>
+          <ComboBox x:Name="AiModelPicker"
+                    Header="服务返回的模型"
+                    PlaceholderText="获取模型后可在这里选择"
+                    DisplayMemberPath="DisplayName"
+                    SelectionChanged="OnAiModelSelectionChanged" />
+          <Button x:Name="AiGetModelsButton" Grid.Column="1"
+                  VerticalAlignment="Bottom"
+                  Click="OnAiGetModelsClick">
+            <StackPanel Orientation="Horizontal" Spacing="7">
+              <FontIcon Glyph="&#xE72C;" FontSize="14" />
+              <TextBlock Text="获取模型" />
+            </StackPanel>
+          </Button>
+        </Grid>
+        <TextBlock x:Name="AiModelCountTextBlock"
+                   Visibility="Collapsed"
+                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+        <Border x:Name="AiActivityPanel" Visibility="Collapsed"
+                Padding="14" CornerRadius="6"
+                BorderThickness="1"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                Background="{ThemeResource LayerFillColorAltBrush}">
+          <StackPanel Spacing="10">
+            <StackPanel Orientation="Horizontal" Spacing="9">
+              <ProgressRing x:Name="AiActivityProgressRing"
+                            Width="18" Height="18" IsActive="False" />
+              <TextBlock x:Name="AiActivityTitleTextBlock"
+                         VerticalAlignment="Center" FontWeight="SemiBold" />
+            </StackPanel>
+            <StackPanel Spacing="4">
+              <TextBlock FontWeight="SemiBold" Text="请求 URL" />
+              <TextBlock x:Name="AiRequestUrlTextBlock"
+                         IsTextSelectionEnabled="True"
+                         TextWrapping="Wrap" />
+            </StackPanel>
+            <StackPanel Spacing="4">
+              <TextBlock FontWeight="SemiBold" Text="脱敏请求" />
+              <TextBox x:Name="AiMaskedRequestTextBox"
+                       MinHeight="92" MaxHeight="210"
+                       FontFamily="Cascadia Mono, Consolas"
+                       FontSize="12"
+                       AcceptsReturn="True" TextWrapping="Wrap"
+                       IsReadOnly="True" />
+            </StackPanel>
+            <StackPanel x:Name="AiResponsePanel" Spacing="4" Visibility="Collapsed">
+              <TextBlock FontWeight="SemiBold" Text="回复内容" />
+              <TextBox x:Name="AiResponseTextBox"
+                       MinHeight="72" MaxHeight="240"
+                       FontFamily="Cascadia Mono, Consolas"
+                       FontSize="12"
+                       AcceptsReturn="True" TextWrapping="Wrap"
+                       IsReadOnly="True" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Button x:Name="AiTestButton" Click="OnAiTestClick">
+            <StackPanel Orientation="Horizontal" Spacing="7">
+              <FontIcon Glyph="&#xE724;" FontSize="14" />
+              <TextBlock Text="发送测试" />
+            </StackPanel>
+          </Button>
+          <Button x:Name="AiSaveButton"
+                  Style="{StaticResource AccentButtonStyle}"
+                  Click="OnAiSaveClick">
+            <StackPanel Orientation="Horizontal" Spacing="7">
+              <FontIcon Glyph="&#xE74E;" FontSize="14" />
+              <TextBlock Text="保存配置" />
+            </StackPanel>
+          </Button>
+          <Button x:Name="AiClearButton" Click="OnAiClearClick">
+            <StackPanel Orientation="Horizontal" Spacing="7">
+              <FontIcon Glyph="&#xE74D;" FontSize="14" />
+              <TextBlock Text="清除" />
+            </StackPanel>
+          </Button>
+        </StackPanel>
+        <InfoBar x:Name="AiInfoBar" IsOpen="False" IsClosable="True" />
+      </StackPanel>
+
+      <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+      <StackPanel Spacing="12">
+        <TextBlock FontSize="18" FontWeight="SemiBold" Text="启动" />
+        <CheckBox IsChecked="{Binding RememberLaunch, Mode=TwoWay}"
+                  Content="记住上次选择" />
+        <ComboBox x:Name="SmapiArgumentPresetComboBox"
+                  Header="添加 SMAPI 参数预设"
+                  PlaceholderText="选择一个官方参数"
+                  SelectionChanged="OnSmapiArgumentPresetSelectionChanged">
+          <ComboBoxItem Content="--no-terminal · 关闭终端输出" Tag="--no-terminal" />
+          <ComboBoxItem Content="--developer-mode · 显示 TRACE 日志" Tag="--developer-mode" />
+          <ComboBoxItem Content="--developer-mode-off · 关闭开发者模式" Tag="--developer-mode-off" />
+        </ComboBox>
+        <TextBox x:Name="SmapiArgumentsTextBox"
+                 Header="SMAPI 启动参数"
+                 PlaceholderText="例如：--no-terminal"
+                 LostFocus="OnArgumentsLostFocus" />
+        <TextBox x:Name="VanillaArgumentsTextBox"
+                 Header="原版游戏启动参数"
+                 PlaceholderText="每个参数可用空格分隔，带空格的值使用引号"
+                 LostFocus="OnArgumentsLostFocus" />
+      </StackPanel>
+
+      <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+      <StackPanel Spacing="12">
+        <TextBlock FontSize="18" FontWeight="SemiBold" Text="外观" />
+        <ComboBox x:Name="ThemeComboBox"
+                  Header="主题"
+                  Width="220"
+                  HorizontalAlignment="Left"
+                  SelectionChanged="OnThemeSelectionChanged">
+          <ComboBoxItem Content="跟随系统" Tag="system" />
+          <ComboBoxItem Content="浅色" Tag="light" />
+          <ComboBoxItem Content="深色" Tag="dark" />
+        </ComboBox>
+        <ComboBox x:Name="AccentPresetComboBox"
+                  Header="Windows 经典强调色"
+                  Width="300"
+                  HorizontalAlignment="Left"
+                  SelectionChanged="OnAccentPresetSelectionChanged">
+          <ComboBoxItem Tag="windows-11-blue">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <Border Width="18" Height="18" CornerRadius="3"
+                      Background="#005FB8"
+                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                      BorderThickness="1" />
+              <TextBlock VerticalAlignment="Center" Text="Windows 11 蓝" />
+            </StackPanel>
+          </ComboBoxItem>
+          <ComboBoxItem Tag="windows-classic-blue">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <Border Width="18" Height="18" CornerRadius="3"
+                      Background="#003399"
+                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                      BorderThickness="1" />
+              <TextBlock VerticalAlignment="Center" Text="Windows 经典蓝" />
+            </StackPanel>
+          </ComboBoxItem>
+          <ComboBoxItem Tag="xp-olive">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <Border Width="18" Height="18" CornerRadius="3"
+                      Background="#5F6F22"
+                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                      BorderThickness="1" />
+              <TextBlock VerticalAlignment="Center" Text="Windows XP 橄榄" />
+            </StackPanel>
+          </ComboBoxItem>
+          <ComboBoxItem Tag="zune">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <Border Width="18" Height="18" CornerRadius="3"
+                      Background="#A33D11"
+                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                      BorderThickness="1" />
+              <TextBlock VerticalAlignment="Center" Text="Zune 棕橙" />
+            </StackPanel>
+          </ComboBoxItem>
+          <ComboBoxItem Tag="windows-purple">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <Border Width="18" Height="18" CornerRadius="3"
+                      Background="#8A157E"
+                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                      BorderThickness="1" />
+              <TextBlock VerticalAlignment="Center" Text="Windows 紫红" />
+            </StackPanel>
+          </ComboBoxItem>
+          <ComboBoxItem Tag="graphite">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <Border Width="18" Height="18" CornerRadius="3"
+                      Background="#525E64"
+                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                      BorderThickness="1" />
+              <TextBlock VerticalAlignment="Center" Text="石墨中性" />
+            </StackPanel>
+          </ComboBoxItem>
+        </ComboBox>
+      </StackPanel>
+    </StackPanel>
+  </ScrollViewer>
+</Page>

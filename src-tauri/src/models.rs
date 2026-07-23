@@ -21,6 +21,25 @@ pub struct SmapiStatus {
 #[serde(rename_all = "camelCase")]
 pub struct SteamStatus {
     pub running: bool,
+    pub identity: Option<SteamIdentity>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SteamIdentity {
+    pub steam_id64: String,
+    pub friend_code: String,
+    pub account_name: Option<String>,
+    pub persona_name: Option<String>,
+    pub source: SteamIdentitySource,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SteamIdentitySource {
+    RegistryActiveUser,
+    LoginUsersVdf,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -93,7 +112,6 @@ pub struct RemoteModSearchIssue {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RemoteModSearchIssueKind {
-    Warning,
     Error,
 }
 
@@ -202,7 +220,7 @@ pub struct Manifest {
     pub description: Option<String>,
     pub author: String,
     pub version: String,
-    #[serde(rename = "UniqueID")]
+    #[serde(rename = "UniqueID", alias = "UniqueId")]
     pub unique_id: String,
     #[serde(default, rename = "Dependencies")]
     pub dependencies: Vec<ManifestDependency>,
@@ -211,7 +229,7 @@ pub struct Manifest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct ManifestDependency {
-    #[serde(rename = "UniqueID")]
+    #[serde(rename = "UniqueID", alias = "UniqueId")]
     pub unique_id: String,
     #[serde(default = "required_by_default", rename = "IsRequired")]
     pub is_required: bool,

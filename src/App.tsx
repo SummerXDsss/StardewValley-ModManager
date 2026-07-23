@@ -1,10 +1,11 @@
 import { useRef, useState } from "react";
-import { App as AntApp, Layout, Spin } from "antd";
+import { Spinner } from "@fluentui/react-components";
 import { Sidebar, Topbar } from "./components/layout";
 import { FirstRunSetup } from "./components/onboarding";
 import { OverviewPage, ModsPage, DownloadsPage, SmapiPage, SettingsPage } from "./components/pages";
+import { useAppUi } from "./components/shared";
 import { useDashboard, useGameProcess, useLaunchArguments, useLaunchPreference, useSteamStatus } from "./hooks";
-import type { LaunchPreference } from "./hooks";
+import type { LaunchPreference, ResolvedTheme } from "./hooks";
 import {
   launchGame,
   openModFolder,
@@ -19,11 +20,21 @@ import {
 import type { GameProcessAction } from "./components/layout/Topbar";
 import type { InstalledMod, LaunchTarget } from "./types";
 
-const { Content } = Layout;
 const ONBOARDING_KEY = "valleySteward.onboardingComplete.v2";
 
-export default function App() {
-  const { message, modal } = AntApp.useApp();
+interface AppProps {
+  resolvedTheme: ResolvedTheme;
+  onToggleTheme: () => void;
+}
+
+export default function App({ resolvedTheme, onToggleTheme }: AppProps) {
+  const { notify, confirm } = useAppUi();
+  const message = {
+    success: (text: string) => notify("success", text),
+    error: (text: string) => notify("error", "操作未完成", text),
+    warning: (text: string) => notify("warning", text),
+    info: (text: string) => notify("info", text),
+  };
   const [page, setPage] = useState("overview");
   const [onboardingComplete, setOnboardingComplete] = useState(
     () => localStorage.getItem(ONBOARDING_KEY) === "true",
@@ -72,13 +83,12 @@ export default function App() {
 
   const confirmRemove = (mod: InstalledMod) => {
     if (modChangesDisabled) return message.warning("请先关闭游戏，再移除 Mod");
-    modal.confirm({
+    confirm({
       title: `移除 ${mod.name}？`,
       content: "Mod 将被移动到管理器回收区，可以在清空前恢复。",
-      okText: "移到回收区",
-      cancelText: "取消",
-      okButtonProps: { danger: true },
-      onOk: async () => {
+      confirmLabel: "移到回收区",
+      destructive: true,
+      onConfirm: async () => {
         if (modChangesDisabled) return;
         if (!dashboard?.installation) return;
         await removeMod(dashboard.installation.path, mod.path);
@@ -229,17 +239,20 @@ export default function App() {
 
   return (
     <>
-      <Layout className="app-layout">
+      <div className="app-layout">
         <Sidebar currentPage={page} onPageChange={setPage} />
-        <Layout className="app-main">
+        <div className="app-main">
           <Topbar
             gamePath={dashboard?.installation?.path}
             smapi={dashboard?.smapi}
             smapiLoading={loading && !dashboard}
             smapiError={dashboard ? undefined : dashboardError}
             steamRunning={steamStatus.running}
+            steamIdentity={steamStatus.identity}
             steamLoading={steamStatus.loading}
             steamError={steamStatus.error}
+            resolvedTheme={resolvedTheme}
+            onToggleTheme={onToggleTheme}
             rememberLaunch={rememberLaunch}
             onRememberLaunchChange={changeRememberLaunch}
             onLaunch={runLaunchChoice}
@@ -252,11 +265,16 @@ export default function App() {
             onStop={() => void handleStopGame()}
             onRestart={() => void handleRestartGame()}
           />
-          <Content className="content">
-            <Spin spinning={loading}>{renderPage()}</Spin>
-          </Content>
-        </Layout>
-      </Layout>
+          <main key={page} className="content">
+            {loading && (
+              <div className="page-loading" role="status" aria-live="polite">
+                <Spinner size="medium" label="正在读取本地状态" />
+              </div>
+            )}
+            {renderPage()}
+          </main>
+        </div>
+      </div>
       {dashboard && (
         <FirstRunSetup
           open={!onboardingComplete || !dashboard.installation}

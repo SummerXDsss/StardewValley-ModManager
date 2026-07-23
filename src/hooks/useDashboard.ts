@@ -1,10 +1,10 @@
 import { useState, useEffect } from "react";
-import { App } from "antd";
 import { getDashboard } from "../api";
+import { useAppUi } from "../components/shared";
 import type { Dashboard, InstalledMod } from "../types";
 
 export function useDashboard() {
-  const { message } = App.useApp();
+  const { notify } = useAppUi();
   const [dashboard, setDashboard] = useState<Dashboard>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -19,7 +19,7 @@ export function useDashboard() {
     } catch (nextError) {
       const errorMessage = String(nextError);
       setError(errorMessage);
-      message.error(errorMessage);
+      notify("error", "无法读取本地游戏状态", errorMessage);
     } finally {
       setLoading(false);
     }

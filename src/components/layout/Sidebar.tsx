@@ -1,20 +1,26 @@
-import { Badge, Layout, Menu } from "antd";
+import { Button, PresenceBadge, Tooltip } from "@fluentui/react-components";
 import {
-  AppstoreOutlined,
-  CloudDownloadOutlined,
-  SafetyCertificateOutlined,
-  SettingOutlined,
-  ToolOutlined,
-} from "@ant-design/icons";
+  Apps24Regular,
+  CloudArrowDown24Regular,
+  LeafOne24Regular,
+  Settings24Regular,
+  ShieldCheckmark24Regular,
+  Wrench24Regular,
+} from "@fluentui/react-icons";
+import type { ReactElement } from "react";
 
-const { Sider } = Layout;
+interface NavItem {
+  key: string;
+  icon: ReactElement;
+  label: string;
+}
 
-const navItems = [
-  { key: "overview", icon: <AppstoreOutlined />, label: "概览" },
-  { key: "mods", icon: <ToolOutlined />, label: "我的 Mod" },
-  { key: "downloads", icon: <CloudDownloadOutlined />, label: "下载中心" },
-  { key: "smapi", icon: <SafetyCertificateOutlined />, label: "SMAPI" },
-  { key: "settings", icon: <SettingOutlined />, label: "设置" },
+const navItems: NavItem[] = [
+  { key: "overview", icon: <Apps24Regular />, label: "概览" },
+  { key: "mods", icon: <Wrench24Regular />, label: "我的 Mod" },
+  { key: "downloads", icon: <CloudArrowDown24Regular />, label: "下载中心" },
+  { key: "smapi", icon: <ShieldCheckmark24Regular />, label: "SMAPI" },
+  { key: "settings", icon: <Settings24Regular />, label: "设置" },
 ];
 
 interface SidebarProps {
@@ -24,24 +30,34 @@ interface SidebarProps {
 
 export function Sidebar({ currentPage, onPageChange }: SidebarProps) {
   return (
-    <Sider width={232} className="sidebar" breakpoint="lg" collapsedWidth={72}>
+    <aside className="sidebar" aria-label="主导航">
       <div className="brand">
-        <span className="brand-mark">V</span>
-        <div>
+        <span className="brand-mark" aria-hidden="true"><LeafOne24Regular /></span>
+        <div className="brand-copy">
           <strong>Valley Steward</strong>
-          <small>Mod 管理器</small>
+          <small>Stardew Valley Mod 管理器</small>
         </div>
       </div>
-      <Menu
-        mode="inline"
-        selectedKeys={[currentPage]}
-        items={navItems}
-        onClick={({ key }) => onPageChange(key)}
-      />
+      <nav className="sidebar-nav">
+        {navItems.map((item) => (
+          <Tooltip key={item.key} content={item.label} relationship="label" positioning="after">
+            <Button
+              appearance="subtle"
+              size="large"
+              icon={item.icon}
+              className={`nav-button ${currentPage === item.key ? "active" : ""}`}
+              aria-current={currentPage === item.key ? "page" : undefined}
+              onClick={() => onPageChange(item.key)}
+            >
+              <span>{item.label}</span>
+            </Button>
+          </Tooltip>
+        ))}
+      </nav>
       <div className="sidebar-foot">
-        <Badge status="success" />
+        <PresenceBadge status="available" size="small" />
         <span>本地服务正常</span>
       </div>
-    </Sider>
+    </aside>
   );
 }

@@ -12,11 +12,10 @@
     "tauri:raw": "tauri"
   },
   "dependencies": {
-    "@ant-design/icons": "^6.1.0",
+    "@fluentui/react-components": "^9.74.4",
+    "@fluentui/react-icons": "^2.0.333",
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "^2.4.0",
-    "antd": "^6.5.0",
-    "dayjs": "^1.11.13",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

@@ -46,11 +46,9 @@ pub fn scan_game_path(app: tauri::AppHandle, game_path: String) -> Result<Dashbo
 
 #[tauri::command]
 pub async fn get_steam_status() -> Result<SteamStatus, String> {
-    tauri::async_runtime::spawn_blocking(|| SteamStatus {
-        running: game::steam_running(),
-    })
-    .await
-    .map_err(|error| format!("读取 Steam 状态任务失败：{error}"))
+    tauri::async_runtime::spawn_blocking(game::steam_status)
+        .await
+        .map_err(|error| format!("读取 Steam 状态任务失败：{error}"))
 }
 
 #[tauri::command]

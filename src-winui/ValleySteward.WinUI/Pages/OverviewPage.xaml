@@ -1,0 +1,227 @@
+<Page
+    x:Class="ValleySteward.WinUI.Pages.OverviewPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <ScrollViewer VerticalScrollBarVisibility="Auto">
+    <StackPanel MaxWidth="1440"
+                Padding="32,26,32,48"
+                HorizontalAlignment="Stretch"
+                Spacing="22">
+      <Grid>
+        <StackPanel>
+          <TextBlock FontFamily="Segoe UI Variable Display"
+                     FontSize="28"
+                     FontWeight="SemiBold"
+                     Text="概览" />
+          <TextBlock Margin="0,5,0,0"
+                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                     Text="{Binding EnvironmentHealthText}" />
+        </StackPanel>
+        <Button HorizontalAlignment="Right"
+                VerticalAlignment="Center"
+                Click="OnRefreshClick"
+                ToolTipService.ToolTip="重新扫描本地环境">
+          <StackPanel Orientation="Horizontal" Spacing="7">
+            <FontIcon Glyph="&#xE72C;" />
+            <TextBlock Text="刷新" />
+          </StackPanel>
+        </Button>
+      </Grid>
+
+      <Grid ColumnSpacing="12">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <Border Grid.Column="0" Padding="16" CornerRadius="6"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+          <StackPanel Spacing="8">
+            <FontIcon HorizontalAlignment="Left" Glyph="&#xE8B7;" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+            <TextBlock FontWeight="SemiBold" Text="游戏目录" />
+            <TextBlock Text="{Binding GameStoreText}" TextTrimming="CharacterEllipsis" />
+            <TextBlock FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="{Binding GamePathText}" TextTrimming="CharacterEllipsis" />
+          </StackPanel>
+        </Border>
+
+        <Border Grid.Column="1" Padding="16" CornerRadius="6"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+          <StackPanel Spacing="8">
+            <FontIcon HorizontalAlignment="Left" Glyph="&#xE7FC;" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+            <TextBlock FontWeight="SemiBold" Text="游戏版本" />
+            <TextBlock Text="{Binding GameVersionText}" />
+            <TextBlock FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="本机可执行文件" />
+          </StackPanel>
+        </Border>
+
+        <Border Grid.Column="2" Padding="16" CornerRadius="6"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+          <StackPanel Spacing="8">
+            <FontIcon HorizontalAlignment="Left" Glyph="&#xE72E;" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+            <TextBlock FontWeight="SemiBold" Text="SMAPI" />
+            <TextBlock Text="{Binding SmapiStatusText}" />
+            <TextBlock FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="版本来自本地 DLL 或随附 Mod" />
+          </StackPanel>
+        </Border>
+
+        <Border Grid.Column="3" Padding="16" CornerRadius="6"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+          <StackPanel Spacing="8">
+            <FontIcon HorizontalAlignment="Left" Glyph="&#xE90F;" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+            <TextBlock FontWeight="SemiBold" Text="已识别 Mod" />
+            <TextBlock>
+              <Run Text="{Binding EnabledModCount}" /><Run Text=" 个启用" />
+            </TextBlock>
+            <TextBlock FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}">
+              <Run Text="{Binding ProblemModCount}" /><Run Text=" 个需要处理" />
+            </TextBlock>
+          </StackPanel>
+        </Border>
+      </Grid>
+
+      <Grid ColumnSpacing="18">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="2*" />
+          <ColumnDefinition Width="*" MinWidth="260" />
+        </Grid.ColumnDefinitions>
+
+        <StackPanel Grid.Column="0" Spacing="10">
+          <TextBlock FontSize="18" FontWeight="SemiBold" Text="最近扫描的 Mod" />
+          <ListView ItemsSource="{Binding Mods}"
+                    MaxHeight="360"
+                    IsItemClickEnabled="False"
+                    SelectionMode="None">
+            <ListView.ItemContainerStyle>
+              <Style TargetType="ListViewItem">
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Setter Property="Padding" Value="0" />
+                <Setter Property="Margin" Value="0,0,0,6" />
+              </Style>
+            </ListView.ItemContainerStyle>
+            <ListView.ItemTemplate>
+              <DataTemplate>
+                <Grid Padding="12,10" ColumnSpacing="12">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="96" />
+                  </Grid.ColumnDefinitions>
+                  <StackPanel>
+                    <TextBlock FontWeight="SemiBold" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                    <TextBlock FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Text="{Binding Author}" TextTrimming="CharacterEllipsis" />
+                  </StackPanel>
+                  <TextBlock Grid.Column="1" VerticalAlignment="Center" Text="{Binding Version}" />
+                  <TextBlock Grid.Column="2" VerticalAlignment="Center" HorizontalAlignment="Right" Text="{Binding StatusText}" />
+                </Grid>
+              </DataTemplate>
+            </ListView.ItemTemplate>
+          </ListView>
+        </StackPanel>
+
+        <StackPanel Grid.Column="1" Spacing="10">
+          <TextBlock FontSize="18" FontWeight="SemiBold" Text="需要关注" />
+          <Border Padding="14" CornerRadius="6"
+                  Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                  BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+            <StackPanel>
+              <TextBlock x:Name="NoWarningsText"
+                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                         Text="当前没有需要处理的项目" />
+              <ItemsControl x:Name="WarningsItems" ItemsSource="{Binding Warnings}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Grid Margin="0,0,0,10" ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="Auto" />
+                      <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <FontIcon FontSize="13" Glyph="&#xE7BA;" Foreground="{ThemeResource SystemFillColorCautionBrush}" />
+                    <TextBlock Grid.Column="1" Text="{Binding}" TextWrapping="Wrap" />
+                  </Grid>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </Grid>
+
+      <StackPanel Spacing="10">
+        <Grid>
+          <TextBlock FontSize="18" FontWeight="SemiBold" Text="最近活动" />
+          <Button x:Name="ClearActivityButton"
+                  HorizontalAlignment="Right"
+                  Padding="9,5"
+                  Click="OnClearActivityClick"
+                  ToolTipService.ToolTip="清空本地活动历史">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <FontIcon Glyph="&#xE74D;" />
+              <TextBlock Text="清空" />
+            </StackPanel>
+          </Button>
+        </Grid>
+
+        <Grid MinHeight="96">
+          <TextBlock x:Name="EmptyActivitiesText"
+                     HorizontalAlignment="Center"
+                     VerticalAlignment="Center"
+                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                     Text="安装、更新和下载记录会显示在这里" />
+          <ListView x:Name="ActivityList"
+                    ItemsSource="{Binding RecentActivities}"
+                    MaxHeight="340"
+                    SelectionMode="None">
+            <ListView.ItemContainerStyle>
+              <Style TargetType="ListViewItem">
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Setter Property="Padding" Value="0" />
+              </Style>
+            </ListView.ItemContainerStyle>
+            <ListView.ItemTemplate>
+              <DataTemplate>
+                <Grid Padding="10,9" ColumnSpacing="14">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="90" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock VerticalAlignment="Top"
+                             FontWeight="SemiBold"
+                             Text="{Binding KindText}" />
+                  <StackPanel Grid.Column="1" Spacing="3">
+                    <TextBlock FontWeight="SemiBold"
+                               Text="{Binding Title}"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock MaxLines="2"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Text="{Binding Detail}"
+                               TextWrapping="WrapWholeWords"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock FontSize="11"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Text="{Binding SourceUrl}"
+                               TextTrimming="CharacterEllipsis" />
+                  </StackPanel>
+                  <TextBlock Grid.Column="2"
+                             HorizontalAlignment="Right"
+                             VerticalAlignment="Top"
+                             Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                             Text="{Binding MetadataText}" />
+                </Grid>
+              </DataTemplate>
+            </ListView.ItemTemplate>
+          </ListView>
+        </Grid>
+      </StackPanel>
+    </StackPanel>
+  </ScrollViewer>
+</Page>

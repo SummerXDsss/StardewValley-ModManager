@@ -1,5 +1,5 @@
-import { Button, Empty, Progress } from "antd";
-import { CloudDownloadOutlined, ReloadOutlined } from "@ant-design/icons";
+import { Button, ProgressBar } from "@fluentui/react-components";
+import { ArrowClockwise20Regular, CloudArrowDown24Regular } from "@fluentui/react-icons";
 import { PageTitle, StatusItem, ModTable } from "../shared";
 import type { Dashboard, InstalledMod } from "../../types";
 
@@ -70,14 +70,14 @@ export function OverviewPage({
               <h2>需要关注</h2>
               <p>优先处理更新和环境问题</p>
             </div>
-            <Button type="link" onClick={() => onPageChange("mods")}>
+            <Button appearance="subtle" onClick={() => onPageChange("mods")}>
               查看全部
             </Button>
           </div>
           {updates ? (
             <div className="attention-row">
               <div className="attention-icon">
-                <CloudDownloadOutlined />
+                <CloudArrowDown24Regular />
               </div>
               <div>
                 <strong>{updates} 个 Mod 可以更新</strong>
@@ -86,7 +86,10 @@ export function OverviewPage({
               <Button onClick={() => onPageChange("mods")}>查看 Mod</Button>
             </div>
           ) : (
-            <Empty description="当前未发现待处理更新" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            <div className="empty-state">
+              <strong>当前未发现待处理更新</strong>
+              <span>本地环境暂时不需要操作。</span>
+            </div>
           )}
         </div>
         <aside className="health-panel">
@@ -95,7 +98,7 @@ export function OverviewPage({
             <strong className="health-score">{healthScore}</strong>
             <span>/ 100</span>
           </div>
-          <Progress percent={healthScore} showInfo={false} strokeColor="#2f6f4e" railColor="#dce3dc" />
+          <ProgressBar value={healthScore / 100} aria-label={`环境健康度 ${healthScore}%`} />
           <p>{healthSummary}</p>
         </aside>
       </div>
@@ -105,7 +108,7 @@ export function OverviewPage({
             <h2>最近的 Mod</h2>
             <p>快速查看当前加载状态</p>
           </div>
-          <Button icon={<ReloadOutlined />} onClick={onRefresh}>
+          <Button icon={<ArrowClockwise20Regular />} onClick={onRefresh}>
             刷新
           </Button>
         </div>

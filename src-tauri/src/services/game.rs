@@ -20,9 +20,13 @@ use winreg::{
     RegKey,
 };
 
-use crate::models::{GameInstallation, LaunchRequest, LaunchTarget, SmapiStatus};
+use crate::models::{
+    GameInstallation, LaunchRequest, LaunchTarget, SmapiStatus, SteamIdentity, SteamIdentitySource,
+    SteamStatus,
+};
 
 const STEAM_APP_ID: &str = "413150";
+const STEAM_ID64_ACCOUNT_BASE: u64 = 76_561_197_960_265_728;
 const MAX_KEYVALUES_FILE_SIZE: u64 = 1024 * 1024;
 const MAX_SMAPI_BUNDLED_MANIFEST_SIZE: usize = 256 * 1024;
 const GAME_PATH_CONFIG_FILE: &str = "game-path.json";
@@ -55,6 +59,16 @@ enum SteamLibraryPathStyle {
 enum SteamGameLayout {
     Standard,
     MacosBundle,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SteamLoginUser {
+    account_id: u32,
+    steam_id64: String,
+    account_name: Option<String>,
+    persona_name: Option<String>,
+    most_recent: bool,
+    timestamp: u64,
 }
 
 pub fn detect_game() -> Option<GameInstallation> {
@@ -143,6 +157,184 @@ pub fn steam_running() -> bool {
         .processes()
         .values()
         .any(|process| is_steam_process_name(process.name()))
+}
+
+pub fn steam_status() -> SteamStatus {
+    let running = steam_running();
+    SteamStatus {
+        running,
+        identity: detect_steam_identity(running),
+    }
+}
+
+fn detect_steam_identity(steam_is_running: bool) -> Option<SteamIdentity> {
+    let active_account_id = steam_is_running.then(active_steam_account_id).flatten();
+    let users = local_steam_login_users();
+
+    if let Some(account_id) = active_account_id {
+        if let Some(user) = select_steam_login_user(&users, Some(account_id)) {
+            return Some(steam_identity_from_login_user(
+                user,
+                SteamIdentitySource::RegistryActiveUser,
+                true,
+            ));
+        }
+        return Some(SteamIdentity {
+            steam_id64: steam_id64_from_account_id(account_id).to_string(),
+            friend_code: account_id.to_string(),
+            account_name: None,
+            persona_name: None,
+            source: SteamIdentitySource::RegistryActiveUser,
+            active: true,
+        });
+    }
+
+    select_steam_login_user(&users, None).map(|user| {
+        steam_identity_from_login_user(user, SteamIdentitySource::LoginUsersVdf, steam_is_running)
+    })
+}
+
+fn steam_identity_from_login_user(
+    user: &SteamLoginUser,
+    source: SteamIdentitySource,
+    active: bool,
+) -> SteamIdentity {
+    SteamIdentity {
+        steam_id64: user.steam_id64.clone(),
+        friend_code: user.account_id.to_string(),
+        account_name: user.account_name.clone(),
+        persona_name: user.persona_name.clone(),
+        source,
+        active,
+    }
+}
+
+fn steam_id64_from_account_id(account_id: u32) -> u64 {
+    STEAM_ID64_ACCOUNT_BASE + u64::from(account_id)
+}
+
+fn steam_account_id(steam_id64: u64) -> Option<u32> {
+    let account_id = steam_id64.checked_sub(STEAM_ID64_ACCOUNT_BASE)?;
+    u32::try_from(account_id).ok()
+}
+
+fn select_steam_login_user(
+    users: &[SteamLoginUser],
+    active_account_id: Option<u32>,
+) -> Option<&SteamLoginUser> {
+    if let Some(account_id) = active_account_id {
+        return users.iter().find(|user| user.account_id == account_id);
+    }
+    users
+        .iter()
+        .max_by_key(|user| (user.most_recent, user.timestamp))
+}
+
+fn local_steam_login_users() -> Vec<SteamLoginUser> {
+    let mut users = Vec::new();
+    for root in steam_roots_for_identity() {
+        let login_users = root.join("config").join("loginusers.vdf");
+        let Some(content) = read_keyvalues_file(&login_users) else {
+            continue;
+        };
+        for user in parse_steam_login_users(&content) {
+            match users
+                .iter_mut()
+                .find(|candidate: &&mut SteamLoginUser| candidate.account_id == user.account_id)
+            {
+                Some(existing) if user.timestamp > existing.timestamp => *existing = user,
+                Some(_) => {}
+                None => users.push(user),
+            }
+        }
+    }
+    users
+}
+
+fn parse_steam_login_users(content: &str) -> Vec<SteamLoginUser> {
+    let Ok(document) = keyvalues_parser::parse(content) else {
+        return Vec::new();
+    };
+    if !document.key.eq_ignore_ascii_case("users") {
+        return Vec::new();
+    }
+    let Some(user_entries) = document.value.get_obj() else {
+        return Vec::new();
+    };
+
+    let mut users = Vec::new();
+    for (steam_id, values) in user_entries.iter() {
+        let Ok(steam_id64) = steam_id.parse::<u64>() else {
+            continue;
+        };
+        let Some(account_id) = steam_account_id(steam_id64) else {
+            continue;
+        };
+        for value in values {
+            let Some(user) = value.get_obj() else {
+                continue;
+            };
+            let optional_text = |key| {
+                vdf_string(user, key)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            };
+            users.push(SteamLoginUser {
+                account_id,
+                steam_id64: steam_id64.to_string(),
+                account_name: optional_text("AccountName"),
+                persona_name: optional_text("PersonaName"),
+                most_recent: vdf_string(user, "MostRecent").is_some_and(|value| value == "1"),
+                timestamp: vdf_string(user, "Timestamp")
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or_default(),
+            });
+        }
+    }
+    users
+}
+
+fn steam_roots_for_identity() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    #[cfg(windows)]
+    {
+        roots.extend(steam_roots_from_registry());
+        roots.extend([
+            PathBuf::from(r"C:\Program Files (x86)\Steam"),
+            PathBuf::from(r"C:\Program Files\Steam"),
+        ]);
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(home) = dirs::home_dir() {
+        roots.extend([
+            home.join(".local/share/Steam"),
+            home.join(".steam/steam"),
+            home.join(".steam/debian-installation"),
+            home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam"),
+            home.join("snap/steam/common/.local/share/Steam"),
+        ]);
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join("Library/Application Support/Steam"));
+    }
+    deduplicate_paths(roots)
+}
+
+#[cfg(windows)]
+fn active_steam_account_id() -> Option<u32> {
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(r"Software\Valve\Steam\ActiveProcess", KEY_READ)
+        .ok()?
+        .get_value::<u32, _>("ActiveUser")
+        .ok()
+        .filter(|account_id| *account_id != 0)
+}
+
+#[cfg(not(windows))]
+fn active_steam_account_id() -> Option<u32> {
+    None
 }
 
 fn is_steam_process_name(name: &OsStr) -> bool {
@@ -732,6 +924,84 @@ mod detection_tests {
         for name in ["steamwebhelper.exe", "steamservice.exe", "not-steam"] {
             assert!(!is_steam_process_name(OsStr::new(name)));
         }
+    }
+
+    #[test]
+    fn parses_steam_login_users_and_selects_the_active_account() {
+        let content = r#"
+            "users"
+            {
+                "76561197960265770"
+                {
+                    "AccountName" "farmhand"
+                    "PersonaName" "Farmer"
+                    "MostRecent" "0"
+                    "Timestamp" "200"
+                }
+                "76561197960579887"
+                {
+                    "AccountName" "junimo"
+                    "PersonaName" "祝尼魔"
+                    "mostrecent" "1"
+                    "timestamp" "100"
+                }
+            }
+        "#;
+
+        let users = parse_steam_login_users(content);
+        assert_eq!(users.len(), 2);
+        let active = select_steam_login_user(&users, Some(42)).expect("active Steam account");
+        assert_eq!(active.account_name.as_deref(), Some("farmhand"));
+        assert_eq!(active.persona_name.as_deref(), Some("Farmer"));
+
+        let most_recent = select_steam_login_user(&users, None).expect("most recent Steam account");
+        assert_eq!(most_recent.account_id, 314_159);
+        assert_eq!(most_recent.persona_name.as_deref(), Some("祝尼魔"));
+    }
+
+    #[test]
+    fn steam_account_ids_round_trip_without_javascript_precision_loss() {
+        for account_id in [1, 42, 3_104_391_686, u32::MAX] {
+            let steam_id64 = steam_id64_from_account_id(account_id);
+            assert_eq!(steam_account_id(steam_id64), Some(account_id));
+            assert!(steam_id64 > 9_007_199_254_740_992);
+        }
+        assert_eq!(steam_account_id(STEAM_ID64_ACCOUNT_BASE - 1), None);
+        assert_eq!(
+            steam_account_id(STEAM_ID64_ACCOUNT_BASE + u64::from(u32::MAX) + 1),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_non_user_login_vdf_entries() {
+        let wrong_root = r#""libraryfolders" { "0" { "path" "C:\\Steam" } }"#;
+        let invalid_ids = r#"
+            "users"
+            {
+                "not-a-steam-id" { "MostRecent" "1" }
+                "42" { "MostRecent" "1" }
+            }
+        "#;
+        assert!(parse_steam_login_users(wrong_root).is_empty());
+        assert!(parse_steam_login_users(invalid_ids).is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires a local Steam login record"]
+    fn reads_and_validates_the_local_steam_identity_smoke() {
+        let status = steam_status();
+        let identity = status
+            .identity
+            .expect("the local Steam installation should expose a login record");
+        let steam_id64 = identity
+            .steam_id64
+            .parse::<u64>()
+            .expect("SteamID64 should remain a decimal string");
+        let account_id =
+            steam_account_id(steam_id64).expect("SteamID64 should contain an AccountID");
+        assert_eq!(identity.friend_code, account_id.to_string());
+        assert!(!identity.steam_id64.is_empty());
     }
 
     #[test]
