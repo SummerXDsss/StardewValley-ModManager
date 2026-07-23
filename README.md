@@ -159,16 +159,90 @@ dotnet publish .\src-winui\ValleySteward.WinUI\ValleySteward.WinUI.csproj `
 
 ### 分享后端极速部署
 
-客户端固定请求 `http://x-svalley-api.summercn.cn`。服务器只需要 .NET 8 ASP.NET Core Runtime、Nginx 和一个 HTTP 反代。公开发布接口内置轻量 IP 限流：同一上传 IP 默认每 10 分钟最多发布 12 次，超出后返回 `429` 与 `Retry-After`。
+客户端固定请求 `http://x-svalley-api.summercn.cn`。公开发布接口内置轻量 IP 限流：同一上传 IP 默认每 10 分钟最多发布 12 次，超出后返回 `429` 与 `Retry-After`。
 
-Docker 一键运行：
+#### Docker 部署（推荐）
+
+服务器需要先安装 Docker Engine 与 Docker Compose 插件。仓库已经包含 `docker-compose.yml` 和分享后端专用 `Dockerfile`，不需要服务器预装 .NET Runtime。
+
+首次上线：
 
 ```bash
+git clone https://github.com/SummerXDsss/StardewValley-ModManager.git
+cd StardewValley-ModManager
+docker compose up -d --build share-server
+```
+
+启动后检查：
+
+```bash
+docker compose ps
+curl http://127.0.0.1:5088/health
+```
+
+运行日志：
+
+```bash
+docker compose logs -f share-server
+```
+
+Docker 默认监听宿主机 `5088` 端口，分享数据持久化在 `./data/share-server/shares.json`。这个目录已加入 `.gitignore`，可以安全备份但不要提交。
+
+配置 Nginx HTTP 反代：
+
+```bash
+sudo tee /etc/nginx/conf.d/x-svalley-api.conf >/dev/null <<'EOF'
+server {
+    listen 80;
+    server_name x-svalley-api.summercn.cn;
+
+    location / {
+        proxy_pass http://127.0.0.1:5088;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+EOF
+sudo nginx -t
+sudo systemctl reload nginx
+curl http://x-svalley-api.summercn.cn/health
+```
+
+DNS 里给 `x-svalley-api.summercn.cn` 添加 A 记录，指向服务器公网 IP。解析生效后，客户端的“分享大厅”会固定请求这个域名。
+
+更新后端：
+
+```bash
+git pull
 docker compose up -d --build share-server
 curl http://127.0.0.1:5088/health
 ```
 
-Docker 默认监听宿主机 `5088` 端口，分享数据持久化在 `./data/share-server/shares.json`。更新后重新执行同一条 `docker compose up -d --build share-server` 即可滚动替换容器。若要直接挂到固定域名，只需要让 Nginx 反代到 `http://127.0.0.1:5088`。
+备份数据：
+
+```bash
+mkdir -p backups
+cp data/share-server/shares.json "backups/shares-$(date +%Y%m%d-%H%M%S).json"
+```
+
+重启、停止与删除容器：
+
+```bash
+docker compose restart share-server
+docker compose stop share-server
+docker compose down
+```
+
+排错：
+
+- `curl http://127.0.0.1:5088/health` 不通：先看 `docker compose ps` 和 `docker compose logs share-server`。
+- 端口被占用：修改 `docker-compose.yml` 里的宿主机端口，例如 `"5099:5088"`，同时把 Nginx `proxy_pass` 改成 `http://127.0.0.1:5099`。
+- 分享数据丢失：检查 `./data/share-server/shares.json` 是否存在，并确认 compose 里的 volume 仍然是 `./data/share-server:/data`。
+
+#### 手动 systemd 部署（备选）
+
+如果不使用 Docker，服务器需要 .NET 8 ASP.NET Core Runtime、Nginx 和一个 HTTP 反代。
 
 Ubuntu / Debian 服务器先安装运行库：
 
