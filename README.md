@@ -161,6 +161,15 @@ dotnet publish .\src-winui\ValleySteward.WinUI\ValleySteward.WinUI.csproj `
 
 客户端固定请求 `http://x-svalley-api.summercn.cn`。服务器只需要 .NET 8 ASP.NET Core Runtime、Nginx 和一个 HTTP 反代。公开发布接口内置轻量 IP 限流：同一上传 IP 默认每 10 分钟最多发布 12 次，超出后返回 `429` 与 `Retry-After`。
 
+Docker 一键运行：
+
+```bash
+docker compose up -d --build share-server
+curl http://127.0.0.1:5088/health
+```
+
+Docker 默认监听宿主机 `5088` 端口，分享数据持久化在 `./data/share-server/shares.json`。更新后重新执行同一条 `docker compose up -d --build share-server` 即可滚动替换容器。若要直接挂到固定域名，只需要让 Nginx 反代到 `http://127.0.0.1:5088`。
+
 Ubuntu / Debian 服务器先安装运行库：
 
 ```bash

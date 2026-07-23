@@ -7,6 +7,7 @@ src-winui/**/bin/
 src-winui/**/obj/
 src-winui/**/NuGet/
 dist/
+data/
 output/playwright/
 output/dark-mode-qa/
 output/winui/
