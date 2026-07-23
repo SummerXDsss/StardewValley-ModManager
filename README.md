@@ -186,7 +186,7 @@ curl http://127.0.0.1:5088/health
 docker compose logs -f share-server
 ```
 
-Docker 默认监听宿主机 `5088` 端口，分享数据持久化在 `./data/share-server/shares.json`。这个目录已加入 `.gitignore`，可以安全备份但不要提交。
+Docker 默认只监听宿主机本机回环地址 `127.0.0.1:5088`，分享数据持久化在 `./data/share-server/shares.json`。这个目录已加入 `.gitignore`，可以安全备份但不要提交。不要把后端容器端口直接暴露到公网；公网入口应统一走 Nginx，这样 `X-Real-IP` 与 `X-Forwarded-*` 头才可信。
 
 配置 Nginx HTTP 反代：
 
@@ -201,6 +201,8 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 EOF
@@ -237,7 +239,7 @@ docker compose down
 排错：
 
 - `curl http://127.0.0.1:5088/health` 不通：先看 `docker compose ps` 和 `docker compose logs share-server`。
-- 端口被占用：修改 `docker-compose.yml` 里的宿主机端口，例如 `"5099:5088"`，同时把 Nginx `proxy_pass` 改成 `http://127.0.0.1:5099`。
+- 端口被占用：修改 `docker-compose.yml` 里的宿主机端口，例如 `"127.0.0.1:5099:5088"`，同时把 Nginx `proxy_pass` 改成 `http://127.0.0.1:5099`。
 - 分享数据丢失：检查 `./data/share-server/shares.json` 是否存在，并确认 compose 里的 volume 仍然是 `./data/share-server:/data`。
 
 #### 手动 systemd 部署（备选）
@@ -302,6 +304,8 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```

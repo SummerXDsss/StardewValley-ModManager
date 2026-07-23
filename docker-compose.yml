@@ -7,7 +7,7 @@ services:
     container_name: valley-steward-share-server
     restart: unless-stopped
     ports:
-      - "5088:5088"
+      - "127.0.0.1:5088:5088"
     environment:
       ASPNETCORE_URLS: "http://+:5088"
       VALLEY_STEWARD_SHARE_STORE: "/data/shares.json"
