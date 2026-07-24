@@ -18,6 +18,7 @@ public sealed partial class ShareHallPage : Page
     private readonly ModUpdateService _modUpdateService = new();
     private readonly ModUpdateDownloadService _modUpdateDownloadService = new();
     private readonly ObservableCollection<ModShareEntry> _shares = [];
+    private readonly ObservableCollection<ModShareEntry> _myShares = [];
     private bool _loaded;
     private bool _directInstallInProgress;
     private ShellViewModel? ViewModel => DataContext as ShellViewModel;
@@ -26,6 +27,7 @@ public sealed partial class ShareHallPage : Page
     {
         InitializeComponent();
         ShareList.ItemsSource = _shares;
+        MyShareList.ItemsSource = _myShares;
         EndpointText.Text = $"HTTP 后端：{ModShareService.ApiBaseUrl}";
     }
 
@@ -50,6 +52,47 @@ public sealed partial class ShareHallPage : Page
         await RefreshHallAsync();
     }
 
+    private async void OnSearchClick(object sender, RoutedEventArgs e)
+    {
+        await RefreshHallAsync();
+    }
+
+    private async void OnSearchKeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key != VirtualKey.Enter)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        await RefreshHallAsync();
+    }
+
+    private void OnShowHallClick(object sender, RoutedEventArgs e)
+    {
+        ShowHallView();
+    }
+
+    private async void OnShowMySharesClick(object sender, RoutedEventArgs e)
+    {
+        ShowMySharesView();
+        await LoadMySharesAsync();
+    }
+
+    private async void OnClaimMySharesClick(object sender, RoutedEventArgs e)
+    {
+        await RunBusyAsync(async () =>
+        {
+            var result = await _shareService.ClaimMineAsync();
+            ReplaceMyShares(result.Shares);
+            ShowMySharesView();
+            ShowMessage(
+                "IP 认领完成",
+                $"当前出口 IP {result.MaskedIp} 已认领 {result.Count} 条分享。",
+                result.Count == 0 ? InfoBarSeverity.Warning : InfoBarSeverity.Success);
+        });
+    }
+
     private async void OnPublishClick(object sender, RoutedEventArgs e)
     {
         if (ViewModel is null)
@@ -66,6 +109,7 @@ public sealed partial class ShareHallPage : Page
         {
             var result = await _shareService.PublishAsync(ViewModel.Mods.ToArray());
             UpsertShare(result.Entry);
+            UpsertMyShare(result.Entry);
             ShareCodeBox.Text = result.Code;
             ShowMessage(
                 "分享已发布",
@@ -139,13 +183,32 @@ public sealed partial class ShareHallPage : Page
     {
         await RunBusyAsync(async () =>
         {
-            var entries = await _shareService.ListAsync();
+            var query = SearchBox.Text.Trim();
+            var includeSearchOnly = IncludeSearchOnlyBox.IsChecked == true
+                && !string.IsNullOrWhiteSpace(query);
+            var entries = await _shareService.ListAsync(query, includeSearchOnly);
             _shares.Clear();
             foreach (var entry in entries)
             {
                 _shares.Add(entry);
             }
-            ShowMessage("分享大厅已刷新", $"已读取 {_shares.Count} 条公开 Mod 列表。", InfoBarSeverity.Success);
+            ShowHallView();
+            ShowMessage(
+                string.IsNullOrWhiteSpace(query) ? "分享大厅已刷新" : "搜索完成",
+                string.IsNullOrWhiteSpace(query)
+                    ? $"已读取 {_shares.Count} 条全部公开 Mod 列表。"
+                    : $"已找到 {_shares.Count} 条匹配“{query}”的分享。",
+                InfoBarSeverity.Success);
+        });
+    }
+
+    private async Task LoadMySharesAsync()
+    {
+        await RunBusyAsync(async () =>
+        {
+            var entries = await _shareService.GetMineAsync();
+            ReplaceMyShares(entries);
+            ShowMessage("我的分享已刷新", $"当前 IP 下有 {_myShares.Count} 条可管理分享。", InfoBarSeverity.Success);
         });
     }
 
@@ -161,12 +224,68 @@ public sealed partial class ShareHallPage : Page
         _shares.Insert(0, entry);
     }
 
+    private void UpsertMyShare(ModShareEntry entry)
+    {
+        for (var index = _myShares.Count - 1; index >= 0; index--)
+        {
+            if (string.Equals(_myShares[index].Code, entry.Code, StringComparison.OrdinalIgnoreCase))
+            {
+                _myShares.RemoveAt(index);
+            }
+        }
+        _myShares.Insert(0, entry);
+    }
+
+    private void RemoveShare(string code)
+    {
+        RemoveFromCollection(_shares, code);
+        RemoveFromCollection(_myShares, code);
+    }
+
+    private static void RemoveFromCollection(ObservableCollection<ModShareEntry> collection, string code)
+    {
+        for (var index = collection.Count - 1; index >= 0; index--)
+        {
+            if (string.Equals(collection[index].Code, code, StringComparison.OrdinalIgnoreCase))
+            {
+                collection.RemoveAt(index);
+            }
+        }
+    }
+
+    private void ReplaceMyShares(IReadOnlyList<ModShareEntry> entries)
+    {
+        _myShares.Clear();
+        foreach (var entry in entries)
+        {
+            _myShares.Add(entry);
+        }
+    }
+
+    private void ShowHallView()
+    {
+        ShareList.Visibility = Visibility.Visible;
+        MySharesPanel.Visibility = Visibility.Collapsed;
+    }
+
+    private void ShowMySharesView()
+    {
+        ShareList.Visibility = Visibility.Collapsed;
+        MySharesPanel.Visibility = Visibility.Visible;
+    }
+
     private async Task RunBusyAsync(Func<Task> action, string errorTitle = "分享服务请求失败")
     {
+        HallButton.IsEnabled = false;
+        MySharesButton.IsEnabled = false;
+        ClaimButton.IsEnabled = false;
         PublishButton.IsEnabled = false;
         RefreshButton.IsEnabled = false;
+        SearchButton.IsEnabled = false;
         FindCodeButton.IsEnabled = false;
         CopyCodeButton.IsEnabled = false;
+        SearchBox.IsEnabled = false;
+        IncludeSearchOnlyBox.IsEnabled = false;
         ShareCodeBox.IsEnabled = false;
         try
         {
@@ -178,12 +297,85 @@ public sealed partial class ShareHallPage : Page
         }
         finally
         {
+            HallButton.IsEnabled = true;
+            MySharesButton.IsEnabled = true;
+            ClaimButton.IsEnabled = true;
             PublishButton.IsEnabled = true;
             RefreshButton.IsEnabled = true;
+            SearchButton.IsEnabled = true;
             FindCodeButton.IsEnabled = true;
             CopyCodeButton.IsEnabled = true;
+            SearchBox.IsEnabled = true;
+            IncludeSearchOnlyBox.IsEnabled = true;
             ShareCodeBox.IsEnabled = true;
         }
+    }
+
+    private void OnCopyEntryCodeClick(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not ModShareEntry entry)
+        {
+            return;
+        }
+
+        ShareCodeBox.Text = entry.Code;
+        CopyTextToClipboard(entry.Code);
+        ShowMessage("分享码已复制", entry.Code, InfoBarSeverity.Success);
+    }
+
+    private async void OnToggleMyShareVisibilityClick(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not ModShareEntry entry)
+        {
+            return;
+        }
+
+        var next = entry.Visibility == ShareVisibility.Public
+            ? ShareVisibility.SearchOnly
+            : ShareVisibility.Public;
+        await RunBusyAsync(async () =>
+        {
+            var updated = await _shareService.UpdateVisibilityAsync(entry.Code, next);
+            UpsertMyShare(updated);
+            if (updated.Visibility == ShareVisibility.Public)
+            {
+                UpsertShare(updated);
+            }
+            else
+            {
+                RemoveFromCollection(_shares, updated.Code);
+            }
+            ShowMessage("可见性已更新", $"{updated.Code} · {updated.DisplayVisibilityText}", InfoBarSeverity.Success);
+        });
+    }
+
+    private async void OnDeleteMyShareClick(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not ModShareEntry entry)
+        {
+            return;
+        }
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "删除分享",
+            Content = $"确定删除分享码 {entry.Code}？删除后其他用户将无法通过大厅、搜索或分享码打开它。",
+            PrimaryButtonText = "删除",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Close,
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        await RunBusyAsync(async () =>
+        {
+            await _shareService.DeleteAsync(entry.Code);
+            RemoveShare(entry.Code);
+            ShowMessage("分享已删除", entry.Code, InfoBarSeverity.Success);
+        });
     }
 
     private async void OnDetailsClick(object sender, RoutedEventArgs e)
@@ -195,17 +387,39 @@ public sealed partial class ShareHallPage : Page
 
         var content = new StackPanel
         {
-            Width = 640,
+            MaxWidth = 640,
             MaxHeight = 560,
             Spacing = 12,
         };
-        content.Children.Add(new TextBlock
+        var header = new Grid
+        {
+            ColumnSpacing = 10,
+        };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(new TextBlock
         {
             Text = $"{entry.ComputerName} · {entry.MaskedIp} · {entry.ModCount} 个 Mod",
             FontSize = 16,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             TextWrapping = TextWrapping.Wrap,
         });
+        var copyCodeButton = new Button
+        {
+            Content = "复制分享码",
+            Tag = entry.Code,
+            Padding = new Thickness(10, 5, 10, 5),
+            VerticalAlignment = VerticalAlignment.Top,
+        };
+        copyCodeButton.Click += (_, _) =>
+        {
+            CopyTextToClipboard(entry.Code);
+            ShareCodeBox.Text = entry.Code;
+            copyCodeButton.Content = "已复制";
+        };
+        Grid.SetColumn(copyCodeButton, 1);
+        header.Children.Add(copyCodeButton);
+        content.Children.Add(header);
 
         ContentDialog? dialog = null;
         foreach (var mod in entry.Mods.Take(80))
@@ -235,13 +449,14 @@ public sealed partial class ShareHallPage : Page
 
     private FrameworkElement BuildModRow(SharedModItem mod, Action closeDetails)
     {
-        var row = new Grid
+        var row = new Border
         {
-            ColumnSpacing = 12,
-            Padding = new Thickness(0, 0, 0, 8),
+            Padding = new Thickness(0, 0, 0, 10),
         };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var layout = new StackPanel
+        {
+            Spacing = 8,
+        };
 
         var text = new StackPanel { Spacing = 3 };
         text.Children.Add(new TextBlock
@@ -266,22 +481,25 @@ public sealed partial class ShareHallPage : Page
                 TextWrapping = TextWrapping.WrapWholeWords,
             });
         }
-        row.Children.Add(text);
+        layout.Children.Add(text);
 
         var actions = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             Spacing = 6,
-            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Left,
         };
-        Grid.SetColumn(actions, 1);
         AddInstallButton(actions, mod, closeDetails);
         AddCopyPreferredLinkButton(actions, mod);
         AddLinkButton(actions, "原始页面", mod.OriginalUrl);
         AddLinkButton(actions, "GitHub Release", mod.GitHubReleaseUrl);
         AddLinkButton(actions, "打开下载", mod.DirectDownloadUrl);
-        row.Children.Add(actions);
+        if (actions.Children.Count > 0)
+        {
+            layout.Children.Add(actions);
+        }
 
+        row.Child = layout;
         return row;
     }
 

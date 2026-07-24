@@ -8,6 +8,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
     options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
 });
 builder.Services.AddSingleton<ShareStore>();
 builder.Services.AddSingleton<ShareRateLimiter>();
@@ -18,15 +19,44 @@ app.MapGet("/", () => Results.Json(new
 {
     name = "Valley Steward Share API",
     status = "ok",
-    endpoints = new[] { "GET /health", "GET /api/shares", "GET /api/shares/{code}", "POST /api/shares" },
+    endpoints = new[]
+    {
+        "GET /health",
+        "GET /api/shares",
+        "GET /api/shares/{code}",
+        "GET /api/my-shares",
+        "POST /api/my-shares/claim",
+        "POST /api/shares",
+        "PUT /api/shares/{code}/visibility",
+        "DELETE /api/shares/{code}",
+    },
 }));
 
 app.MapGet("/health", () => Results.Ok(new { ok = true, time = DateTimeOffset.UtcNow }));
 
-app.MapGet("/api/shares", async (ShareStore store, CancellationToken cancellationToken) =>
+app.MapGet("/api/shares", async (
+    string? q,
+    bool? includeSearchOnly,
+    ShareStore store,
+    CancellationToken cancellationToken) =>
 {
-    var shares = await store.ListAsync(cancellationToken);
+    var shares = await store.ListAsync(q, includeSearchOnly == true, cancellationToken);
     return Results.Ok(shares.Select(ShareEntryDto.FromEntry));
+});
+
+app.MapGet("/api/my-shares", async (HttpContext context, ShareStore store, CancellationToken cancellationToken) =>
+{
+    var uploadIp = IpReader.GetUploadIp(context);
+    var shares = await store.ListOwnedAsync(uploadIp, cancellationToken);
+    return Results.Ok(shares.Select(ShareEntryDto.FromEntry));
+});
+
+app.MapPost("/api/my-shares/claim", async (HttpContext context, ShareStore store, CancellationToken cancellationToken) =>
+{
+    var uploadIp = IpReader.GetUploadIp(context);
+    var shares = await store.ListOwnedAsync(uploadIp, cancellationToken);
+    var dtos = shares.Select(ShareEntryDto.FromEntry).ToArray();
+    return Results.Ok(new ShareClaimDto(IpReader.Mask(uploadIp), dtos.Length, dtos));
 });
 
 app.MapGet("/api/shares/{code}", async (string code, ShareStore store, CancellationToken cancellationToken) =>
@@ -71,10 +101,61 @@ app.MapPost("/api/shares", async (
         request.Mods
             .Take(ShareValidator.MaximumMods)
             .Select(ShareValidator.NormalizeMod)
-            .ToArray());
+            .ToArray(),
+        ShareVisibility.Public);
 
     entry = await store.AddAsync(entry, cancellationToken);
     return Results.Created($"/api/shares/{entry.Code}", ShareEntryDto.FromEntry(entry));
+});
+
+app.MapPut("/api/shares/{code}/visibility", async (
+    string code,
+    ShareVisibilityRequest request,
+    HttpContext context,
+    ShareStore store,
+    CancellationToken cancellationToken) =>
+{
+    if (!ShareCode.IsValid(code))
+    {
+        return Results.BadRequest(new { error = "分享码必须是 10 位字母数字组合。" });
+    }
+
+    if (!Enum.IsDefined(request.Visibility))
+    {
+        return Results.BadRequest(new { error = "分享可见性无效。" });
+    }
+
+    var uploadIp = IpReader.GetUploadIp(context);
+    var update = await store.UpdateVisibilityOwnedAsync(code, uploadIp, request.Visibility, cancellationToken);
+    return update.Result switch
+    {
+        ShareStoreMutationResult.Success when update.Entry is not null => Results.Ok(ShareEntryDto.FromEntry(update.Entry)),
+        ShareStoreMutationResult.NotFound => Results.NotFound(new { error = "分享不存在或已被清理。" }),
+        ShareStoreMutationResult.Forbidden => Results.Json(new { error = "只能管理当前 IP 发布或认领的分享。" }, statusCode: StatusCodes.Status403Forbidden),
+        _ => Results.Json(new { error = "分享可见性更新失败。" }, statusCode: StatusCodes.Status500InternalServerError),
+    };
+});
+
+app.MapDelete("/api/shares/{code}", async (
+    string code,
+    HttpContext context,
+    ShareStore store,
+    CancellationToken cancellationToken) =>
+{
+    if (!ShareCode.IsValid(code))
+    {
+        return Results.BadRequest(new { error = "分享码必须是 10 位字母数字组合。" });
+    }
+
+    var uploadIp = IpReader.GetUploadIp(context);
+    var result = await store.DeleteOwnedAsync(code, uploadIp, cancellationToken);
+    return result switch
+    {
+        ShareStoreMutationResult.Success => Results.NoContent(),
+        ShareStoreMutationResult.NotFound => Results.NotFound(new { error = "分享不存在或已被清理。" }),
+        ShareStoreMutationResult.Forbidden => Results.Json(new { error = "只能删除当前 IP 发布或认领的分享。" }, statusCode: StatusCodes.Status403Forbidden),
+        _ => Results.Json(new { error = "分享删除失败。" }, statusCode: StatusCodes.Status500InternalServerError),
+    };
 });
 
 app.Run();
@@ -87,6 +168,7 @@ internal sealed class ShareStore
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() },
     };
 
     public ShareStore(IConfiguration configuration)
@@ -96,14 +178,37 @@ internal sealed class ShareStore
             ?? Path.Combine(AppContext.BaseDirectory, "App_Data", "shares.json");
     }
 
-    public async Task<IReadOnlyList<ShareEntry>> ListAsync(CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<ShareEntry>> ListAsync(
+        string? query,
+        bool includeSearchOnly,
+        CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var normalizedQuery = NormalizeQuery(query);
+            return (await LoadAsync(cancellationToken))
+                .Where(entry => IsVisibleForHall(entry, includeSearchOnly))
+                .Where(entry => normalizedQuery is null || MatchesQuery(entry, normalizedQuery))
+                .OrderByDescending(entry => entry.UploadedAt)
+                .Take(100)
+                .ToArray();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<ShareEntry>> ListOwnedAsync(string uploadIp, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
         try
         {
             return (await LoadAsync(cancellationToken))
+                .Where(entry => IsOwner(entry, uploadIp))
                 .OrderByDescending(entry => entry.UploadedAt)
-                .Take(100)
+                .Take(300)
                 .ToArray();
         }
         finally
@@ -119,6 +224,66 @@ internal sealed class ShareStore
         {
             return (await LoadAsync(cancellationToken))
                 .FirstOrDefault(entry => string.Equals(entry.Code, code, StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<ShareStoreUpdateResult> UpdateVisibilityOwnedAsync(
+        string code,
+        string uploadIp,
+        ShareVisibility visibility,
+        CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var entries = (await LoadAsync(cancellationToken)).ToList();
+            var index = entries.FindIndex(entry => string.Equals(entry.Code, code, StringComparison.OrdinalIgnoreCase));
+            if (index < 0)
+            {
+                return new ShareStoreUpdateResult(ShareStoreMutationResult.NotFound, null);
+            }
+            if (!IsOwner(entries[index], uploadIp))
+            {
+                return new ShareStoreUpdateResult(ShareStoreMutationResult.Forbidden, null);
+            }
+
+            var updated = entries[index] with { Visibility = visibility };
+            entries[index] = updated;
+            await SaveAsync(entries, cancellationToken);
+            return new ShareStoreUpdateResult(ShareStoreMutationResult.Success, updated);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<ShareStoreMutationResult> DeleteOwnedAsync(
+        string code,
+        string uploadIp,
+        CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var entries = (await LoadAsync(cancellationToken)).ToList();
+            var index = entries.FindIndex(entry => string.Equals(entry.Code, code, StringComparison.OrdinalIgnoreCase));
+            if (index < 0)
+            {
+                return ShareStoreMutationResult.NotFound;
+            }
+            if (!IsOwner(entries[index], uploadIp))
+            {
+                return ShareStoreMutationResult.Forbidden;
+            }
+
+            entries.RemoveAt(index);
+            await SaveAsync(entries, cancellationToken);
+            return ShareStoreMutationResult.Success;
         }
         finally
         {
@@ -189,6 +354,44 @@ internal sealed class ShareStore
             await JsonSerializer.SerializeAsync(stream, entries, _jsonOptions, cancellationToken);
         }
         File.Move(temporaryPath, _path, overwrite: true);
+    }
+
+    private static bool IsOwner(ShareEntry entry, string uploadIp)
+    {
+        return string.Equals(entry.UploadIp, uploadIp, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsVisibleForHall(ShareEntry entry, bool includeSearchOnly)
+    {
+        return entry.Visibility == ShareVisibility.Public
+            || includeSearchOnly && entry.Visibility == ShareVisibility.SearchOnly;
+    }
+
+    private static string? NormalizeQuery(string? query)
+    {
+        query = query?.Trim();
+        return string.IsNullOrWhiteSpace(query)
+            ? null
+            : query.Length > 128 ? query[..128] : query;
+    }
+
+    private static bool MatchesQuery(ShareEntry entry, string query)
+    {
+        return Contains(entry.Code, query)
+            || Contains(entry.ComputerName, query)
+            || Contains(IpReader.Mask(entry.UploadIp), query)
+            || entry.Mods.Any(mod =>
+                Contains(mod.Name, query)
+                || Contains(mod.UniqueId, query)
+                || Contains(mod.Author, query)
+                || Contains(mod.Provider, query)
+                || Contains(mod.Version, query)
+                || mod.UpdateKeys.Any(key => Contains(key, query)));
+    }
+
+    private static bool Contains(string? text, string query)
+    {
+        return text?.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
     }
 }
 
@@ -504,7 +707,8 @@ internal sealed record ShareEntry(
     string ComputerName,
     string UploadIp,
     DateTimeOffset UploadedAt,
-    IReadOnlyList<SharedMod> Mods);
+    IReadOnlyList<SharedMod> Mods,
+    ShareVisibility Visibility = ShareVisibility.Public);
 
 internal sealed record SharedMod(
     string Name,
@@ -527,12 +731,38 @@ internal sealed record ProviderInfo(
     bool CanOpenOriginal,
     bool CanDirectDownload);
 
+internal enum ShareVisibility
+{
+    Public,
+    SearchOnly,
+}
+
+internal enum ShareStoreMutationResult
+{
+    Success,
+    NotFound,
+    Forbidden,
+}
+
+internal sealed record ShareStoreUpdateResult(
+    ShareStoreMutationResult Result,
+    ShareEntry? Entry);
+
+internal sealed record ShareVisibilityRequest(ShareVisibility Visibility);
+
+internal sealed record ShareClaimDto(
+    string MaskedIp,
+    int Count,
+    IReadOnlyList<ShareEntryDto> Shares);
+
 internal sealed record ShareEntryDto(
     string Code,
     string ComputerName,
     string MaskedIp,
     DateTimeOffset UploadedAt,
     int ModCount,
+    ShareVisibility Visibility,
+    string VisibilityText,
     IReadOnlyList<string> CoverUrls,
     IReadOnlyList<SharedMod> Mods)
 {
@@ -544,6 +774,8 @@ internal sealed record ShareEntryDto(
             IpReader.Mask(entry.UploadIp),
             entry.UploadedAt,
             entry.Mods.Count,
+            entry.Visibility,
+            entry.Visibility == ShareVisibility.Public ? "全部公开" : "仅搜索可见",
             entry.Mods
                 .Select(mod => mod.CoverUrl)
                 .Where(url => !string.IsNullOrWhiteSpace(url))

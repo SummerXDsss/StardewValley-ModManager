@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using ValleySteward.WinUI.Models;
 
 namespace ValleySteward.WinUI.Services;
@@ -13,6 +14,7 @@ public sealed class ModShareService
     {
         PropertyNameCaseInsensitive = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Converters = { new JsonStringEnumConverter() },
     };
 
     private static readonly HttpClient Client = CreateClient();
@@ -47,12 +49,31 @@ public sealed class ModShareService
             entry);
     }
 
-    public async Task<IReadOnlyList<ModShareEntry>> ListAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<ModShareEntry>> ListAsync(
+        string? query = null,
+        bool includeSearchOnly = false,
+        CancellationToken cancellationToken = default)
     {
-        using var response = await Client.GetAsync(BuildUri("/api/shares"), cancellationToken);
+        using var response = await Client.GetAsync(BuildListUri(query, includeSearchOnly), cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
         return await response.Content.ReadFromJsonAsync<IReadOnlyList<ModShareEntry>>(JsonOptions, cancellationToken)
             ?? Array.Empty<ModShareEntry>();
+    }
+
+    public async Task<IReadOnlyList<ModShareEntry>> GetMineAsync(CancellationToken cancellationToken = default)
+    {
+        using var response = await Client.GetAsync(BuildUri("/api/my-shares"), cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<IReadOnlyList<ModShareEntry>>(JsonOptions, cancellationToken)
+            ?? Array.Empty<ModShareEntry>();
+    }
+
+    public async Task<ModShareClaimResult> ClaimMineAsync(CancellationToken cancellationToken = default)
+    {
+        using var response = await Client.PostAsync(BuildUri("/api/my-shares/claim"), content: null, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<ModShareClaimResult>(JsonOptions, cancellationToken)
+            ?? new ModShareClaimResult("?.*.*.?", 0, Array.Empty<ModShareEntry>());
     }
 
     public async Task<ModShareEntry> GetAsync(string code, CancellationToken cancellationToken = default)
@@ -69,6 +90,41 @@ public sealed class ModShareService
         await EnsureSuccessAsync(response, cancellationToken);
         return await response.Content.ReadFromJsonAsync<ModShareEntry>(JsonOptions, cancellationToken)
             ?? throw new InvalidDataException("分享服务返回空响应。");
+    }
+
+    public async Task<ModShareEntry> UpdateVisibilityAsync(
+        string code,
+        ShareVisibility visibility,
+        CancellationToken cancellationToken = default)
+    {
+        code = code.Trim();
+        if (!IsValidShareCode(code))
+        {
+            throw new ArgumentException("分享码必须是 10 位数字或字母。", nameof(code));
+        }
+
+        using var response = await Client.PutAsJsonAsync(
+            BuildUri($"/api/shares/{Uri.EscapeDataString(code)}/visibility"),
+            new ModShareVisibilityRequest(visibility),
+            JsonOptions,
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<ModShareEntry>(JsonOptions, cancellationToken)
+            ?? throw new InvalidDataException("分享服务返回空响应。");
+    }
+
+    public async Task DeleteAsync(string code, CancellationToken cancellationToken = default)
+    {
+        code = code.Trim();
+        if (!IsValidShareCode(code))
+        {
+            throw new ArgumentException("分享码必须是 10 位数字或字母。", nameof(code));
+        }
+
+        using var response = await Client.DeleteAsync(
+            BuildUri($"/api/shares/{Uri.EscapeDataString(code)}"),
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
     }
 
     internal static bool IsValidShareCode(string value)
@@ -195,6 +251,22 @@ public sealed class ModShareService
     private static Uri BuildUri(string path)
     {
         return new Uri(new Uri(ApiBaseUrl.TrimEnd('/') + "/"), path.TrimStart('/'));
+    }
+
+    private static Uri BuildListUri(string? query, bool includeSearchOnly)
+    {
+        var parameters = new List<string>();
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            parameters.Add($"q={Uri.EscapeDataString(query.Trim())}");
+        }
+        if (includeSearchOnly)
+        {
+            parameters.Add("includeSearchOnly=true");
+        }
+
+        var suffix = parameters.Count == 0 ? string.Empty : "?" + string.Join("&", parameters);
+        return BuildUri("/api/shares" + suffix);
     }
 
     private static HttpClient CreateClient()

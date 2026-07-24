@@ -11,7 +11,11 @@
       <RowDefinition Height="*" />
     </Grid.RowDefinitions>
 
-    <Grid ColumnSpacing="16">
+    <Grid ColumnSpacing="16" RowSpacing="10">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto" />
+        <RowDefinition Height="Auto" />
+      </Grid.RowDefinitions>
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="*" />
         <ColumnDefinition Width="Auto" />
@@ -29,6 +33,55 @@
                   VerticalAlignment="Center"
                   Orientation="Horizontal"
                   Spacing="8">
+        <Button x:Name="HallButton" Click="OnShowHallClick">
+          <StackPanel Orientation="Horizontal" Spacing="7">
+            <FontIcon Glyph="&#xE80F;" />
+            <TextBlock Text="大厅" />
+          </StackPanel>
+        </Button>
+        <Button x:Name="MySharesButton" Click="OnShowMySharesClick">
+          <StackPanel Orientation="Horizontal" Spacing="7">
+            <FontIcon Glyph="&#xE77B;" />
+            <TextBlock Text="我的分享" />
+          </StackPanel>
+        </Button>
+        <Button x:Name="ClaimButton" Click="OnClaimMySharesClick">
+          <StackPanel Orientation="Horizontal" Spacing="7">
+            <FontIcon Glyph="&#xE8D4;" />
+            <TextBlock Text="IP 认领" />
+          </StackPanel>
+        </Button>
+        <Button x:Name="PublishButton" Click="OnPublishClick">
+          <StackPanel Orientation="Horizontal" Spacing="7">
+            <FontIcon Glyph="&#xE72D;" />
+            <TextBlock Text="分享我的列表" />
+          </StackPanel>
+        </Button>
+        <Button x:Name="RefreshButton" Click="OnRefreshClick">
+          <StackPanel Orientation="Horizontal" Spacing="7">
+            <FontIcon Glyph="&#xE72C;" />
+            <TextBlock Text="刷新" />
+          </StackPanel>
+        </Button>
+      </StackPanel>
+
+      <StackPanel Grid.Row="1"
+                  Grid.ColumnSpan="2"
+                  Orientation="Horizontal"
+                  Spacing="8">
+        <TextBox x:Name="SearchBox"
+                 Width="220"
+                 PlaceholderText="搜索用户、IP、Mod"
+                 KeyDown="OnSearchKeyDown" />
+        <Button x:Name="SearchButton" Click="OnSearchClick">
+          <StackPanel Orientation="Horizontal" Spacing="7">
+            <FontIcon Glyph="&#xE721;" />
+            <TextBlock Text="搜索" />
+          </StackPanel>
+        </Button>
+        <CheckBox x:Name="IncludeSearchOnlyBox"
+                  VerticalAlignment="Center"
+                  Content="包含仅搜索可见" />
         <TextBox x:Name="ShareCodeBox"
                  Width="132"
                  MaxLength="10"
@@ -46,18 +99,6 @@
             <TextBlock Text="复制" />
           </StackPanel>
         </Button>
-        <Button x:Name="PublishButton" Click="OnPublishClick">
-          <StackPanel Orientation="Horizontal" Spacing="7">
-            <FontIcon Glyph="&#xE72D;" />
-            <TextBlock Text="分享我的列表" />
-          </StackPanel>
-        </Button>
-        <Button x:Name="RefreshButton" Click="OnRefreshClick">
-          <StackPanel Orientation="Horizontal" Spacing="7">
-            <FontIcon Glyph="&#xE72C;" />
-            <TextBlock Text="刷新" />
-          </StackPanel>
-        </Button>
       </StackPanel>
     </Grid>
 
@@ -66,96 +107,171 @@
              IsOpen="False"
              IsClosable="True" />
 
-    <ListView x:Name="ShareList"
-              Grid.Row="2"
-              SelectionMode="None">
-      <ListView.ItemContainerStyle>
-        <Style TargetType="ListViewItem">
-          <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-          <Setter Property="Padding" Value="0" />
-          <Setter Property="Margin" Value="0,0,0,10" />
-        </Style>
-      </ListView.ItemContainerStyle>
-      <ListView.ItemTemplate>
-        <DataTemplate>
-          <Border Padding="16,14"
-                  CornerRadius="6"
-                  Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                  BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                  BorderThickness="1">
-            <Grid ColumnSpacing="16">
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-              </Grid.ColumnDefinitions>
+    <Grid Grid.Row="2">
+      <ListView x:Name="ShareList"
+                SelectionMode="None">
+        <ListView.ItemContainerStyle>
+          <Style TargetType="ListViewItem">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="0,0,0,10" />
+          </Style>
+        </ListView.ItemContainerStyle>
+        <ListView.ItemTemplate>
+          <DataTemplate>
+            <Border Padding="16,14"
+                    CornerRadius="6"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1">
+              <Grid ColumnSpacing="16">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
 
-              <StackPanel Spacing="9">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                  <TextBlock FontSize="16"
-                             FontWeight="SemiBold"
-                             Text="{Binding HeaderText}"
-                             TextTrimming="CharacterEllipsis" />
-                  <Border Padding="6,2"
-                          CornerRadius="3"
-                          Background="{ThemeResource SubtleFillColorSecondaryBrush}">
-                    <TextBlock FontSize="12" Text="{Binding Code}" />
-                  </Border>
+                <StackPanel Spacing="9">
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock FontSize="16"
+                               FontWeight="SemiBold"
+                               Text="{Binding HeaderText}"
+                               TextTrimming="CharacterEllipsis" />
+                    <Border Padding="6,2"
+                            CornerRadius="3"
+                            Background="{ThemeResource SubtleFillColorSecondaryBrush}">
+                      <TextBlock FontSize="12" Text="{Binding Code}" />
+                    </Border>
+                  </StackPanel>
+                  <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                             Text="{Binding SummaryText}" />
+
+                  <Grid MinHeight="46">
+                    <ItemsControl ItemsSource="{Binding CoverTiles}"
+                                  HorizontalAlignment="Left">
+                      <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                          <StackPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                      </ItemsControl.ItemsPanel>
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <Border Width="44"
+                                  Height="44"
+                                  Margin="0,0,6,0"
+                                  CornerRadius="5"
+                                  Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                  BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}"
+                                  BorderThickness="1"
+                                  ToolTipService.ToolTip="{Binding ToolTip}">
+                            <Grid>
+                              <TextBlock Text="{Binding Initial}"
+                                         HorizontalAlignment="Center"
+                                         VerticalAlignment="Center"
+                                         FontSize="16"
+                                         FontWeight="SemiBold"
+                                         Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                              <Image Width="42"
+                                     Height="42"
+                                     Stretch="UniformToFill"
+                                     Loaded="OnShareCoverLoaded"
+                                     DataContextChanged="OnShareCoverDataContextChanged"
+                                     ImageFailed="OnShareCoverFailed"
+                                     AutomationProperties.Name="共享 Mod 封面" />
+                            </Grid>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </Grid>
                 </StackPanel>
-                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                           Text="{Binding SummaryText}" />
 
-                <Grid MinHeight="46">
-                  <ItemsControl ItemsSource="{Binding CoverTiles}"
-                                HorizontalAlignment="Left">
-                    <ItemsControl.ItemsPanel>
-                      <ItemsPanelTemplate>
-                        <StackPanel Orientation="Horizontal" />
-                      </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate>
-                        <Border Width="44"
-                                Height="44"
-                                Margin="0,0,6,0"
-                                CornerRadius="5"
-                                Background="{ThemeResource SubtleFillColorSecondaryBrush}"
-                                BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}"
-                                BorderThickness="1"
-                                ToolTipService.ToolTip="{Binding ToolTip}">
-                          <Grid>
-                            <TextBlock Text="{Binding Initial}"
-                                       HorizontalAlignment="Center"
-                                       VerticalAlignment="Center"
-                                       FontSize="16"
-                                       FontWeight="SemiBold"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <Image Width="42"
-                                   Height="42"
-                                   Stretch="UniformToFill"
-                                   Loaded="OnShareCoverLoaded"
-                                   DataContextChanged="OnShareCoverDataContextChanged"
-                                   ImageFailed="OnShareCoverFailed"
-                                   AutomationProperties.Name="共享 Mod 封面" />
-                          </Grid>
-                        </Border>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                </Grid>
-              </StackPanel>
+                <Button Grid.Column="1"
+                        VerticalAlignment="Center"
+                        Click="OnDetailsClick">
+                  <StackPanel Orientation="Horizontal" Spacing="7">
+                    <FontIcon Glyph="&#xE946;" />
+                    <TextBlock Text="详情" />
+                  </StackPanel>
+                </Button>
+              </Grid>
+            </Border>
+          </DataTemplate>
+        </ListView.ItemTemplate>
+      </ListView>
 
-              <Button Grid.Column="1"
-                      VerticalAlignment="Center"
-                      Click="OnDetailsClick">
-                <StackPanel Orientation="Horizontal" Spacing="7">
-                  <FontIcon Glyph="&#xE946;" />
-                  <TextBlock Text="详情" />
+      <Grid x:Name="MySharesPanel"
+            Visibility="Collapsed"
+            RowSpacing="10">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <TextBlock Text="同 IP 发布或认领的分享可以在这里修改可见性、复制分享码或删除。"
+                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+        <ListView x:Name="MyShareList"
+                  Grid.Row="1"
+                  SelectionMode="None">
+          <ListView.ItemContainerStyle>
+            <Style TargetType="ListViewItem">
+              <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+              <Setter Property="Padding" Value="0" />
+              <Setter Property="Margin" Value="0,0,0,10" />
+            </Style>
+          </ListView.ItemContainerStyle>
+          <ListView.ItemTemplate>
+            <DataTemplate>
+              <Border Padding="16,14"
+                      CornerRadius="6"
+                      Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                      BorderThickness="1">
+                <StackPanel Spacing="10">
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock FontSize="16"
+                               FontWeight="SemiBold"
+                               Text="{Binding HeaderText}"
+                               TextTrimming="CharacterEllipsis" />
+                    <Border Padding="6,2"
+                            CornerRadius="3"
+                            Background="{ThemeResource SubtleFillColorSecondaryBrush}">
+                      <TextBlock FontSize="12" Text="{Binding Code}" />
+                    </Border>
+                    <Border Padding="6,2"
+                            CornerRadius="3"
+                            Background="{ThemeResource SubtleFillColorSecondaryBrush}">
+                      <TextBlock FontSize="12" Text="{Binding DisplayVisibilityText}" />
+                    </Border>
+                  </StackPanel>
+                  <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                             Text="{Binding SummaryText}" />
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Click="OnDetailsClick">
+                      <StackPanel Orientation="Horizontal" Spacing="7">
+                        <FontIcon Glyph="&#xE946;" />
+                        <TextBlock Text="详情" />
+                      </StackPanel>
+                    </Button>
+                    <Button Click="OnCopyEntryCodeClick">
+                      <StackPanel Orientation="Horizontal" Spacing="7">
+                        <FontIcon Glyph="&#xE8C8;" />
+                        <TextBlock Text="复制分享码" />
+                      </StackPanel>
+                    </Button>
+                    <Button Click="OnToggleMyShareVisibilityClick"
+                            Content="{Binding VisibilityToggleText}" />
+                    <Button Click="OnDeleteMyShareClick">
+                      <StackPanel Orientation="Horizontal" Spacing="7">
+                        <FontIcon Glyph="&#xE74D;" />
+                        <TextBlock Text="删除" />
+                      </StackPanel>
+                    </Button>
+                  </StackPanel>
                 </StackPanel>
-              </Button>
-            </Grid>
-          </Border>
-        </DataTemplate>
-      </ListView.ItemTemplate>
-    </ListView>
+              </Border>
+            </DataTemplate>
+          </ListView.ItemTemplate>
+        </ListView>
+      </Grid>
+    </Grid>
   </Grid>
 </Page>

@@ -23,11 +23,17 @@ public sealed class ModShareEntry
     public string MaskedIp { get; init; } = string.Empty;
     public DateTimeOffset UploadedAt { get; init; }
     public int ModCount { get; init; }
+    public ShareVisibility Visibility { get; init; } = ShareVisibility.Public;
+    public string? VisibilityText { get; init; }
     public IReadOnlyList<string> CoverUrls { get; init; } = Array.Empty<string>();
     public IReadOnlyList<SharedModItem> Mods { get; init; } = Array.Empty<SharedModItem>();
 
     public string HeaderText => $"{ComputerName} · {MaskedIp}";
-    public string SummaryText => $"{ModCount} 个 Mod · {UploadedAt.ToLocalTime():yyyy-MM-dd HH:mm}";
+    public string SummaryText => $"{ModCount} 个 Mod · {DisplayVisibilityText} · {UploadedAt.ToLocalTime():yyyy-MM-dd HH:mm}";
+    public string DisplayVisibilityText => string.IsNullOrWhiteSpace(VisibilityText)
+        ? Visibility == ShareVisibility.Public ? "全部公开" : "仅搜索可见"
+        : VisibilityText!;
+    public string VisibilityToggleText => Visibility == ShareVisibility.Public ? "设为仅搜索可见" : "设为全部公开";
     public IReadOnlyList<SharedModCoverTile> CoverTiles => Mods
         .Take(10)
         .Select(SharedModCoverTile.FromMod)
@@ -63,6 +69,19 @@ public sealed record ModSharePublishResult(
     string Code,
     string PageUrl,
     ModShareEntry Entry);
+
+public enum ShareVisibility
+{
+    Public,
+    SearchOnly,
+}
+
+public sealed record ModShareVisibilityRequest(ShareVisibility Visibility);
+
+public sealed record ModShareClaimResult(
+    string MaskedIp,
+    int Count,
+    IReadOnlyList<ModShareEntry> Shares);
 
 public sealed record SharedModCoverTile(
     string? CoverUrl,

@@ -219,7 +219,11 @@ DNS 里给 `x-svalley-api.summercn.cn` 添加 A 记录，指向服务器公网 I
 git pull
 docker compose up -d --build share-server
 curl http://127.0.0.1:5088/health
+curl http://127.0.0.1:5088/ | grep my-shares
+curl http://x-svalley-api.summercn.cn/ | grep my-shares
 ```
+
+如果 `/health` 正常但 `grep my-shares` 没有输出，说明容器仍在跑旧镜像或服务器还没拉到包含“我的分享 / IP 认领 / 删除分享”接口的新提交。重新执行 `git pull && docker compose up -d --build share-server`，再用 `docker compose logs --tail=80 share-server` 看启动日志。
 
 备份数据：
 
